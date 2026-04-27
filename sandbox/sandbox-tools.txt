@@ -8,6 +8,15 @@ curl               HTTP client. -s silent, -k skip TLS, -d data, -H header.
 wget               HTTP download. wget -O file url.
 nmap               Port scanner. nmap -sV host, nmap -p- host.
 
+== WEB PENTESTING ==
+ffuf               Fast web fuzzer. ffuf -u http://t/FUZZ -w /opt/wordlists/common.txt
+                   Param fuzzing: ffuf -u 'http://t/?FUZZ=x' -w wordlist
+                   VHost: ffuf -u http://t/ -H 'Host: FUZZ.t' -w wordlist -fs 0
+sqlmap             Automated SQL injection. sqlmap -u 'http://t/?id=1' --batch --dbs
+                   POST: sqlmap -u 'http://t/login' --data 'u=a&p=b' --batch
+/opt/wordlists/    common.txt, raft-medium-directories.txt, raft-medium-files.txt,
+                   quickhits.txt, passwords-top10k.txt (subset of SecLists)
+
 == BINARY ANALYSIS ==
 file               Identify file type. file binary
 strings            Extract printable strings. strings -n 8 binary
@@ -17,6 +26,14 @@ binwalk            Firmware/embedded extraction. binwalk -e file to extract.
 objdump            Disassembly. objdump -d binary (from binutils).
 readelf            ELF header info. readelf -a binary.
 nm                 Symbol listing. nm binary.
+
+== JVM / JAVA ==
+javac / java       OpenJDK compiler/runtime (default-jdk).
+javap              Bytecode disassembler. javap -c -p ClassName, javap -v -p Class.
+jar                JAR archive tool. jar tf app.jar, jar xf app.jar.
+jadx               Java/APK decompiler. jadx -d out/ app.jar
+                   GUI variant available as jadx-gui (X required).
+keytool            Certificate/keystore tool.
 
 == DEBUGGERS / TRACING ==
 gdb                GNU debugger. gdb binary, then run, break, info, x/...
@@ -61,10 +78,30 @@ sage               SageMath CAS. sage -c 'from sage.all import *; print(factor(n
 cado-nfs           Number Field Sieve (large factoring/DLP). cado-nfs <N>
 flatter            Fast LLL lattice reduction. flatter < input_matrix
 
-== BUILD TOOLS ==
+== BUILD TOOLS / RUNTIMES ==
 gcc / g++          C/C++ compiler. gcc -o exploit exploit.c
 make / cmake       Build systems.
 jq                 JSON processor. cat file.json | jq '.key'
+nodejs / npm       JavaScript runtime + package manager. node script.js
+sqlite3            SQLite CLI. sqlite3 file.db '.dump'
+
+== SOURCE CODE REVIEW ==
+semgrep            Pattern-based SAST across 30+ languages.
+                   semgrep --config=auto path/                 (sensible defaults)
+                   semgrep --config=p/security-audit path/     (security ruleset)
+                   semgrep --config=p/python path/             (language-specific)
+                   semgrep --config=p/owasp-top-ten path/
+trailmark          Trail of Bits' code-graph analyzer (REQUIRES python3.12).
+                   Polyglot: 20+ languages incl. Solidity/Cairo/Circom.
+                   python3.12 -c '
+                   import trailmark
+                   g = trailmark.Graph.from_directory("./src")
+                   print(g.attack_surface())              # entrypoints + trust
+                   print(g.entrypoint_paths_to("system")) # taint paths
+                   print(g.complexity_hotspots(15))       # high-complexity fns
+                   print(g.functions_that_raise("ValueError"))
+                   '
+                   See https://github.com/trailofbits/trailmark for full API.
 
 == ARCHIVE ==
 zip / unzip        ZIP archives.

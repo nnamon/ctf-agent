@@ -30,8 +30,14 @@ RUN apt-get update && apt-get install -y \
     python3 python3-pip python3-dev \
     # Ruby (for zsteg)
     ruby ruby-dev \
-    # Java (for Ghidra headless if mounted)
-    default-jre-headless \
+    # Java (full JDK for jar/javap/javac, also Ghidra headless)
+    default-jdk-headless \
+    # JS runtime (web challenges, audit of JS source)
+    nodejs npm \
+    # Web pentesting
+    sqlmap \
+    # SQLite (DB forensics, practice)
+    sqlite3 \
     # Misc
     git jq zip unzip ca-certificates ncurses-term \
     # Math libs (required by flatter, cado-nfs, fpylll)
@@ -109,7 +115,8 @@ RUN pip3 install --no-cache-dir \
     flask \
     volatility3 \
     PyJWT \
-    pyghidra
+    pyghidra \
+    semgrep
 
 # ── PyTorch (CPU-only) + Keras ────────────────────────────────────────────────
 RUN pip3 install --no-cache-dir --ignore-installed sympy \
@@ -132,6 +139,49 @@ if [ ! -d "$BUILD_PARENT/$H" ]; then\n\
 fi\n\
 exec python3 /opt/cado-nfs/cado-nfs.py "$@"\n' > /usr/local/bin/cado-nfs \
     && chmod +x /usr/local/bin/cado-nfs
+
+# ── ffuf (content / parameter / vhost fuzzer) ────────────────────────────────
+RUN ARCH=$(dpkg --print-architecture) \
+    && case "$ARCH" in arm64) FFUF_ARCH=arm64 ;; amd64) FFUF_ARCH=amd64 ;; *) FFUF_ARCH=amd64 ;; esac \
+    && curl -sSL "https://github.com/ffuf/ffuf/releases/download/v2.1.0/ffuf_2.1.0_linux_${FFUF_ARCH}.tar.gz" \
+       -o /tmp/ffuf.tgz \
+    && tar -xzf /tmp/ffuf.tgz -C /usr/local/bin ffuf \
+    && rm /tmp/ffuf.tgz \
+    && ffuf -V | head -1
+
+# ── jadx (Java/APK decompiler) ────────────────────────────────────────────────
+RUN curl -sSL "https://github.com/skylot/jadx/releases/download/v1.5.0/jadx-1.5.0.zip" \
+       -o /tmp/jadx.zip \
+    && mkdir -p /opt/jadx \
+    && unzip -q /tmp/jadx.zip -d /opt/jadx \
+    && rm /tmp/jadx.zip \
+    && ln -s /opt/jadx/bin/jadx /usr/local/bin/jadx \
+    && ln -s /opt/jadx/bin/jadx-gui /usr/local/bin/jadx-gui
+
+# ── Wordlists (small subset of SecLists for ffuf/dirbusting) ──────────────────
+RUN mkdir -p /opt/wordlists \
+    && curl -sSL https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/common.txt \
+        -o /opt/wordlists/common.txt \
+    && curl -sSL https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/raft-medium-directories.txt \
+        -o /opt/wordlists/raft-medium-directories.txt \
+    && curl -sSL https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/raft-medium-files.txt \
+        -o /opt/wordlists/raft-medium-files.txt \
+    && curl -sSL https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/quickhits.txt \
+        -o /opt/wordlists/quickhits.txt \
+    && curl -sSL https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/10-million-password-list-top-10000.txt \
+        -o /opt/wordlists/passwords-top10k.txt
+
+# ── Python 3.12 + trailmark (Trail of Bits' code-graph analyzer) ──────────────
+# trailmark requires Python 3.12+, but the rest of the sandbox is on the system
+# Python 3.10. We install 3.12 alongside (via deadsnakes) and put trailmark there.
+# Use as: python3.12 -c "import trailmark; ..."
+RUN apt-get update && apt-get install -y --no-install-recommends software-properties-common \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 python3.12-venv python3.12-dev \
+    && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12 \
+    && python3.12 -m pip install --no-cache-dir trailmark \
+    && rm -rf /var/lib/apt/lists/*
 
 # ── Tools reference ──────────────────────────────────────────────────────────
 COPY sandbox/sandbox-tools.txt /tools.txt
