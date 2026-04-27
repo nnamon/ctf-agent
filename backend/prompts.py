@@ -182,11 +182,20 @@ def build_prompt(
             "For RSA: use `RsaCtfTool`, sage ECM, or `cado-nfs`."
         ),
         "   - Pwn: `stty raw -echo` before launching vulnerable binaries over nc.",
-        '4. **Ignore placeholder flags** — `CTF{flag}`, `CTF{placeholder}` are not real flags.',
+        '4. **Ignore placeholder flags** — `CTF{flag}`, `CTF{placeholder}`, '
+        '`NOT_FOUND`, `UNKNOWN`, `N/A`, etc. are not real flags. **Never invent '
+        'a flag value.**',
         f"5. {submit_hint}",
         "6. Once CORRECT: output `FLAG: <value>` on its own line.",
         "7. Do not guess. Do not ask. Cover maximum surface area.",
         f"8. {note_hint}",
+        '9. **Structured output discipline**: emit `{type: "flag_found", flag, '
+        'method}` ONLY when you have actually executed the exploit, read the '
+        'real flag value from the service or filesystem, and the value matches '
+        "the challenge's expected shape. If you have genuinely exhausted your "
+        'ideas, emit `{type: "gave_up", reason}` honestly — the platform will '
+        'retry with sibling insights. Submitting a placeholder under '
+        '`flag_found` is treated as a wrong answer.',
     ]
 
     return "\n".join(lines)

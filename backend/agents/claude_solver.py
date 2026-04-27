@@ -353,11 +353,20 @@ class ClaudeSolver:
 
                     output = getattr(message, "structured_output", None)
                     if output:
-                        if output.get("type") == "flag_found":
-                            self._flag = output.get("flag")
-                            self._findings = f"Flag found via {output.get('method', '?')}: {self._flag}"
-                            if self.no_submit:
-                                self._confirmed = True
+                        out_type = output.get("type")
+                        if out_type == "flag_found":
+                            flag_val = str(output.get("flag", "")).strip()
+                            if flag_val:
+                                self._flag = flag_val
+                                self._findings = (
+                                    f"Flag found via {output.get('method', '?')}: {flag_val}"
+                                )
+                                if self.no_submit:
+                                    self._confirmed = True
+                            else:
+                                self._findings = "Empty flag in flag_found output — treating as gave_up."
+                        elif out_type == "gave_up":
+                            self._findings = f"Gave up: {output.get('reason', '(no reason given)')}"
 
             self.tracer.event("turn_complete", duration=round(time.monotonic() - t0, 1), cost=round(self._cost_usd, 4))
 

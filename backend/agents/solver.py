@@ -25,7 +25,7 @@ from backend.models import (
     resolve_model_settings,
     supports_vision,
 )
-from backend.output_types import FlagFound
+from backend.output_types import FlagFound, GaveUp, SolverOutput
 from backend.prompts import ChallengeMeta, build_prompt, list_distfiles
 from backend.sandbox import DockerSandbox
 from backend.solver_base import CANCELLED, CORRECT_MARKERS, ERROR, FLAG_FOUND, GAVE_UP, SolverResult
@@ -147,7 +147,7 @@ class Solver:
         self.loop_detector = LoopDetector()
         self.tracer = SolverTracer(meta.name, self.model_id)
         self.agent_name = f"{meta.name}/{self.model_id}"
-        self._agent: Agent[SolverDeps, FlagFound] | None = None
+        self._agent: Agent[SolverDeps, SolverOutput] | None = None
         self._messages: list = []
         self._step_count = [0]  # mutable ref shared with TracingToolset
         self._flag: str | None = None
@@ -190,7 +190,7 @@ class Solver:
             system_prompt=system_prompt,
             model_settings=model_settings,
             toolsets=[toolset],
-            output_type=FlagFound,
+            output_type=SolverOutput,
         )
 
         self.tracer.event("start", challenge=self.meta.name, model=self.model_id)
@@ -247,11 +247,19 @@ class Solver:
 
             output = result.output
             if isinstance(output, FlagFound):
-                self._flag = output.flag
-                self._findings = f"Flag found via {output.method}: {output.flag}"
-                # In dry-run mode, structured output is sufficient (can't verify via CTFd)
-                if self.deps.no_submit:
-                    self._confirmed = True
+                flag_val = (output.flag or "").strip()
+                # Refuse empty / whitespace-only flag strings even if the model
+                # wraps them in a flag_found response. The model must surface
+                # an actual value or pick gave_up.
+                if flag_val:
+                    self._flag = flag_val
+                    self._findings = f"Flag found via {output.method}: {flag_val}"
+                    if self.deps.no_submit:
+                        self._confirmed = True
+                else:
+                    self._findings = "Empty flag in flag_found output — treating as gave_up."
+            elif isinstance(output, GaveUp):
+                self._findings = f"Gave up: {output.reason}"
             # CTFd confirmation always counts (the primary path when not in dry-run)
             if self.deps.confirmed_flag:
                 self._confirmed = True

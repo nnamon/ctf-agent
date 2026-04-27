@@ -519,11 +519,20 @@ class CodexSolver:
                 return self._result(ERROR)
 
             if self._structured_output:
-                if self._structured_output.get("type") == "flag_found":
-                    self._flag = self._structured_output.get("flag")
-                    self._findings = f"Flag found via {self._structured_output.get('method', '?')}: {self._flag}"
-                    if self.no_submit:
-                        self._confirmed = True
+                out_type = self._structured_output.get("type")
+                if out_type == "flag_found":
+                    flag_val = str(self._structured_output.get("flag", "")).strip()
+                    if flag_val:
+                        self._flag = flag_val
+                        self._findings = (
+                            f"Flag found via {self._structured_output.get('method', '?')}: {flag_val}"
+                        )
+                        if self.no_submit:
+                            self._confirmed = True
+                    else:
+                        self._findings = "Empty flag in flag_found output — treating as gave_up."
+                elif out_type == "gave_up":
+                    self._findings = f"Gave up: {self._structured_output.get('reason', '(no reason given)')}"
 
             if self._confirmed and self._flag:
                 return self._result(FLAG_FOUND)
