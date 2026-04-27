@@ -13,6 +13,9 @@ async def submit_flag(ctx: RunContext[SolverDeps], flag: str) -> str:
     Do NOT submit placeholder flags like CTF{flag} or CTF{placeholder}.
     """
     if ctx.deps.no_submit:
+        # Dry-run has no CTFd to confirm against; treat the submission attempt
+        # itself as the find. Operator verifies the flag by eye.
+        ctx.deps.confirmed_flag = flag.strip()
         return f'DRY RUN — would submit "{flag.strip()}" but --no-submit is set.'
 
     # Use deduped submission via swarm if available, otherwise direct CTFd call

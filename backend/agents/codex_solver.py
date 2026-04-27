@@ -17,6 +17,7 @@ import base64
 import itertools
 import json
 import logging
+import os
 import time
 from typing import Any
 
@@ -208,16 +209,20 @@ class CodexSolver:
             "workspace at /challenge/workspace/. Do NOT use any paths outside /challenge/. "
             f"Your tools: {', '.join(tool_names)}. Use these for ALL operations.\n\n"
         )
-        thread_params = {
+        thread_params: dict[str, Any] = {
             "model": self.model_id,
             "personality": "pragmatic",
             "baseInstructions": sandbox_preamble + system_prompt,
             "cwd": "/challenge",
             "approvalPolicy": "on-request",
             "sandbox": "read-only",
-            "serviceTier": "flex",
             "dynamicTools": SANDBOX_TOOLS,
         }
+        # serviceTier "flex" is an OpenAI API feature (cheaper/slower); ChatGPT
+        # subscription auth rejects it. Opt-in via env so subscription is the default.
+        service_tier = os.environ.get("CODEX_SERVICE_TIER")
+        if service_tier:
+            thread_params["serviceTier"] = service_tier
         # Reasoning effort for models that support it
         reasoning = REASONING_EFFORT.get(self.model_id)
         if reasoning:
@@ -431,6 +436,11 @@ class CodexSolver:
         elif name == "submit_flag":
             flag = args.get("flag", "")
             if self.no_submit:
+                # Dry-run has no CTFd to confirm against; treat the submission
+                # attempt itself as the find. Operator verifies the flag by eye.
+                self._confirmed = True
+                self._flag = flag
+                self.tracer.event("flag_confirmed", flag=flag, step=self._step_count, dry_run=True)
                 return f'DRY RUN — would submit "{flag}"'
             if self.submit_fn:
                 display, is_confirmed = await self.submit_fn(flag)

@@ -150,6 +150,12 @@ class ClaudeSolver:
                     flag_val = flag_match.group(1).strip()
                     if self.no_submit:
                         result_msg = f'DRY RUN — would submit "{flag_val}"'
+                        # Dry-run has no CTFd to confirm against; treat the
+                        # submission attempt itself as the find. Operator
+                        # verifies the flag by eye.
+                        self._confirmed = True
+                        self._flag = flag_val
+                        self.tracer.event("flag_confirmed", flag=flag_val, step=self._step_count, dry_run=True)
                     else:
                         if self.submit_fn:
                             display, confirmed = await self.submit_fn(flag_val)

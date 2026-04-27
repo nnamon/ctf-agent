@@ -257,9 +257,14 @@ class ChallengeSwarm:
 
             if result.status in (GAVE_UP, ERROR):
                 if result.step_count == 0 and result.cost_usd == 0:
-                    logger.warning(
-                        f"[{self.meta.name}/{model_spec}] Broken (0 steps, $0) — not bumping"
-                    )
+                    if self.cancel_event.is_set():
+                        logger.info(
+                            f"[{self.meta.name}/{model_spec}] Cancelled before first step (race won by sibling)"
+                        )
+                    else:
+                        logger.warning(
+                            f"[{self.meta.name}/{model_spec}] Broken (0 steps, $0) — not bumping"
+                        )
                     break
 
                 # Track consecutive errors — stop after 3 in a row
