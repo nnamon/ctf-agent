@@ -30,6 +30,8 @@ def build_deps(
     no_submit: bool = False,
     challenge_dirs: dict[str, str] | None = None,
     challenge_metas: dict[str, ChallengeMeta] | None = None,
+    no_writeup: bool = False,
+    writeup_model: str = "claude-opus-4-6",
 ) -> tuple[CTFdClient, CostTracker, CoordinatorDeps]:
     """Create CTFd client, cost tracker, and coordinator deps."""
     ctfd = CTFdClient(
@@ -52,6 +54,8 @@ def build_deps(
         max_concurrent_challenges=getattr(settings, "max_concurrent_challenges", 10),
         challenge_dirs=challenge_dirs or {},
         challenge_metas=challenge_metas or {},
+        no_writeup=no_writeup,
+        writeup_model=writeup_model,
     )
 
     # Pre-load already-pulled challenges

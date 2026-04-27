@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 
 from backend.deps import CoordinatorDeps
@@ -81,13 +82,17 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
     deps.swarms[challenge_name] = swarm
 
     async def _run_and_cleanup() -> None:
+        t0 = time.monotonic()
         result = await swarm.run()
+        duration_s = time.monotonic() - t0
         # Flag already submitted/confirmed by solver's submit_fn — just record the result
         if result and result.status == FLAG_FOUND:
             deps.results[challenge_name] = {
                 "flag": result.flag,
                 "submit": "DRY RUN" if deps.no_submit else "confirmed by solver",
             }
+            if not deps.no_writeup:
+                await _generate_writeup_for_swarm(swarm, result, deps, duration_s)
 
     task = asyncio.create_task(_run_and_cleanup(), name=f"swarm-{challenge_name}")
     deps.swarm_tasks[challenge_name] = task
@@ -178,3 +183,33 @@ async def do_broadcast(deps: CoordinatorDeps, challenge_name: str, message: str)
         return f"No swarm running for {challenge_name}"
     await swarm.message_bus.broadcast(message)
     return f"Broadcast to all solvers on {challenge_name}"
+
+
+async def _generate_writeup_for_swarm(swarm, winner_result, deps: CoordinatorDeps, duration_s: float) -> None:
+    """Build the post-mortem writeup for one finished swarm. Never raises."""
+    try:
+        from backend.agents.postmortem import generate_writeup
+
+        winner_spec = swarm.winner_spec or "unknown"
+        sibling_traces: list[tuple[str, Path]] = []
+        for spec, solver in swarm.solvers.items():
+            if spec == winner_spec:
+                continue
+            tracer = getattr(solver, "tracer", None)
+            path = Path(tracer.path) if tracer and getattr(tracer, "path", None) else None
+            if path:
+                sibling_traces.append((spec, path))
+
+        out = await generate_writeup(
+            meta=swarm.meta,
+            winner_result=winner_result,
+            winner_spec=winner_spec,
+            sibling_traces=sibling_traces,
+            cost_usd=deps.cost_tracker.total_cost_usd,
+            duration_s=duration_s,
+            model=deps.writeup_model,
+        )
+        if out:
+            logger.info("Post-mortem writeup written: %s", out)
+    except Exception as e:
+        logger.warning("Post-mortem failed for %s: %s", swarm.meta.name, e, exc_info=True)

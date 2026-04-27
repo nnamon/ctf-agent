@@ -33,6 +33,8 @@ class SolverDeps:
     submit_fn: SubmitFn | None = None  # Deduped flag submission via swarm
     no_submit: bool = False
     notify_coordinator: Callable[[str], Coroutine[Any, Any, None]] | None = None
+    # Writes a free-form note into the solver's trace for post-mortem use.
+    note_fn: Callable[[str], None] | None = None
 
 
 @dataclass
@@ -46,6 +48,10 @@ class CoordinatorDeps:
     max_concurrent_challenges: int = 10
 
     msg_port: int = 0  # 0 = auto-pick free port
+
+    # Post-mortem writeup config
+    no_writeup: bool = False
+    writeup_model: str = "claude-opus-4-6"
 
     # Runtime state
     coordinator_inbox: asyncio.Queue = field(default_factory=asyncio.Queue)

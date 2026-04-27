@@ -151,10 +151,20 @@ def build_prompt(
         image_hint = "**Images: call `view_image` FIRST, before any other analysis.**"
         web_hint = "Web: fuzz params, check JS source, cookies, robots.txt. For XSS/SSRF: use `webhook_create`."
         submit_hint = "**Verify every candidate with `submit_flag`** before reporting."
+        note_hint = (
+            "Use `note` to record key findings as you work — vulns identified (with brief proof), "
+            "working payloads (paste the snippet), dead ends (and why), generalizable techniques. "
+            "These compile into a post-mortem writeup at the end."
+        )
     else:
         image_hint = "**Images: use `exiftool`, `steghide`, `zsteg`, `strings`, `xxd` via bash.**"
         web_hint = "Web: fuzz params, check JS source, cookies, robots.txt. For XSS/SSRF: use `curl` to webhook.site."
         submit_hint = "**Verify every candidate with `submit_flag '<flag>'`** (bash command) before reporting."
+        note_hint = (
+            "Use `note '<content>'` (bash) to record key findings as you work — vulns identified "
+            "(with brief proof), working payloads (paste the snippet), dead ends (and why), "
+            "generalizable techniques. These compile into a post-mortem writeup at the end."
+        )
 
     lines += [
         "",
@@ -176,6 +186,7 @@ def build_prompt(
         f"5. {submit_hint}",
         "6. Once CORRECT: output `FLAG: <value>` on its own line.",
         "7. Do not guess. Do not ask. Cover maximum surface area.",
+        f"8. {note_hint}",
     ]
 
     return "\n".join(lines)

@@ -40,6 +40,8 @@ def _setup_logging(verbose: bool = False) -> None:
 @click.option("--coordinator", default="claude", type=click.Choice(["claude", "codex"]), help="Coordinator backend")
 @click.option("--max-challenges", default=10, type=int, help="Max challenges solved concurrently")
 @click.option("--msg-port", default=0, type=int, help="Operator message port (0 = auto)")
+@click.option("--no-writeup", is_flag=True, help="Skip the post-mortem writeup after each solve")
+@click.option("--writeup-model", default="claude-opus-4-6", help="Model used to generate the post-mortem writeup")
 @click.option("-v", "--verbose", is_flag=True, help="Verbose logging")
 def main(
     ctfd_url: str | None,
@@ -53,6 +55,8 @@ def main(
     coordinator: str,
     max_challenges: int,
     msg_port: int,
+    no_writeup: bool,
+    writeup_model: str,
     verbose: bool,
 ) -> None:
     """CTF Agent — multi-model solver swarm.
@@ -78,9 +82,9 @@ def main(
     console.print()
 
     if challenge:
-        asyncio.run(_run_single(settings, challenge, model_specs, no_submit, max_challenges))
+        asyncio.run(_run_single(settings, challenge, model_specs, no_submit, max_challenges, no_writeup, writeup_model))
     else:
-        asyncio.run(_run_coordinator(settings, model_specs, challenges_dir, no_submit, coordinator_model, coordinator, max_challenges, msg_port))
+        asyncio.run(_run_coordinator(settings, model_specs, challenges_dir, no_submit, coordinator_model, coordinator, max_challenges, msg_port, no_writeup, writeup_model))
 
 
 async def _run_single(
@@ -89,8 +93,12 @@ async def _run_single(
     model_specs: list[str],
     no_submit: bool,
     max_challenges: int,
+    no_writeup: bool = False,
+    writeup_model: str = "claude-opus-4-6",
 ) -> None:
     """Run a single challenge with a swarm."""
+    import time
+
     from backend.agents.swarm import ChallengeSwarm
     from backend.cost_tracker import CostTracker
     from backend.ctfd import CTFdClient
@@ -128,8 +136,10 @@ async def _run_single(
         no_submit=no_submit,
     )
 
+    t0 = time.monotonic()
     try:
         result = await swarm.run()
+        duration_s = time.monotonic() - t0
         from backend.solver_base import FLAG_FOUND
         if result and result.status == FLAG_FOUND:
             console.print(f"\n[bold green]FLAG FOUND:[/bold green] {result.flag}")
@@ -140,8 +150,43 @@ async def _run_single(
         for agent_name in cost_tracker.by_agent:
             console.print(f"  {agent_name}: {cost_tracker.format_usage(agent_name)}")
         console.print(f"  [bold]Total: ${cost_tracker.total_cost_usd:.2f}[/bold]")
+
+        if not no_writeup and result and result.status == FLAG_FOUND:
+            await _generate_writeup(swarm, result, cost_tracker, duration_s, writeup_model)
     finally:
         await ctfd.close()
+
+
+async def _generate_writeup(swarm, winner_result, cost_tracker, duration_s, model: str) -> None:
+    """Generate a post-mortem writeup for a finished swarm."""
+    from pathlib import Path
+
+    from backend.agents.postmortem import generate_writeup
+
+    winner_spec = swarm.winner_spec or "unknown"
+    sibling_traces: list[tuple[str, Path]] = []
+    for spec, solver in swarm.solvers.items():
+        if spec == winner_spec:
+            continue
+        tracer = getattr(solver, "tracer", None)
+        path = Path(tracer.path) if tracer and getattr(tracer, "path", None) else None
+        if path:
+            sibling_traces.append((spec, path))
+
+    console.print("\n[dim]Generating post-mortem writeup...[/dim]")
+    out = await generate_writeup(
+        meta=swarm.meta,
+        winner_result=winner_result,
+        winner_spec=winner_spec,
+        sibling_traces=sibling_traces,
+        cost_usd=cost_tracker.total_cost_usd,
+        duration_s=duration_s,
+        model=model,
+    )
+    if out:
+        console.print(f"[green]Writeup:[/green] {out}")
+    else:
+        console.print("[yellow]Writeup generation skipped or failed (see logs).[/yellow]")
 
 
 async def _run_coordinator(
@@ -153,6 +198,8 @@ async def _run_coordinator(
     coordinator_backend: str,
     max_challenges: int,
     msg_port: int = 0,
+    no_writeup: bool = False,
+    writeup_model: str = "claude-opus-4-6",
 ) -> None:
     """Run the full coordinator (continuous until Ctrl+C)."""
     from backend.sandbox import cleanup_orphan_containers, configure_semaphore
@@ -171,6 +218,8 @@ async def _run_coordinator(
             no_submit=no_submit,
             coordinator_model=coordinator_model,
             msg_port=msg_port,
+            no_writeup=no_writeup,
+            writeup_model=writeup_model,
         )
     else:
         from backend.agents.claude_coordinator import run_claude_coordinator
@@ -181,6 +230,8 @@ async def _run_coordinator(
             no_submit=no_submit,
             coordinator_model=coordinator_model,
             msg_port=msg_port,
+            no_writeup=no_writeup,
+            writeup_model=writeup_model,
         )
 
     console.print("\n[bold]Final Results:[/bold]")

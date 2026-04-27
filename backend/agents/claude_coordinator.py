@@ -112,10 +112,13 @@ async def run_claude_coordinator(
     no_submit: bool = False,
     coordinator_model: str | None = None,
     msg_port: int = 0,
+    no_writeup: bool = False,
+    writeup_model: str = "claude-opus-4-6",
 ) -> dict[str, Any]:
     """Run the Claude Agent SDK coordinator with the shared event loop."""
     ctfd, cost_tracker, deps = build_deps(
         settings, model_specs, challenges_root, no_submit,
+        no_writeup=no_writeup, writeup_model=writeup_model,
     )
     deps.msg_port = msg_port
 

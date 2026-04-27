@@ -60,6 +60,7 @@ class ChallengeSwarm:
     solvers: dict[str, SolverProtocol] = field(default_factory=dict)
     findings: dict[str, str] = field(default_factory=dict)
     winner: SolverResult | None = None
+    winner_spec: str | None = None
     confirmed_flag: str | None = None
     _flag_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _submit_count: dict[str, int] = field(default_factory=dict)  # per-model wrong submission count
@@ -229,6 +230,7 @@ class ChallengeSwarm:
             if result.status == FLAG_FOUND:
                 self.cancel_event.set()
                 self.winner = result
+                self.winner_spec = model_spec
                 logger.info(
                     f"[{self.meta.name}] Flag found by {model_spec}: {result.flag}"
                 )

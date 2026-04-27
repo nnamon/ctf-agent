@@ -114,6 +114,11 @@ SANDBOX_TOOLS = [
         "description": "Send a strategic message to the coordinator (e.g. flag format discovery, shared vulnerability, request for help).",
         "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]},
     },
+    {
+        "name": "note",
+        "description": "Record a key insight, working payload, or dead end for the post-mortem writeup. Call this whenever you've identified a vulnerability (with brief proof), a working exploit payload (paste the actual code/request), a dead end (with the reason you ruled it out), or a generalizable technique. These notes are compiled into a writeup at the end of the run and do not affect grading. Be concise — one or two lines per note.",
+        "inputSchema": {"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]},
+    },
 ]
 
 
@@ -464,6 +469,11 @@ class CodexSolver:
                 await self.notify_coordinator(args.get("message", ""))
                 return "Message sent to coordinator."
             return "No coordinator connected."
+        elif name == "note":
+            content = str(args.get("content", "")).strip()
+            if content:
+                self.tracer.event("note", content=content[:2000], step=self._step_count)
+            return "noted."
         return f"Unknown tool: {name}"
 
     async def run_until_done_or_gave_up(self) -> SolverResult:

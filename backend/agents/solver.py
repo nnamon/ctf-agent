@@ -34,6 +34,7 @@ from backend.tools.sandbox import (
     bash,
     check_findings,
     list_files,
+    note,
     notify_coordinator,
     read_file,
     web_fetch,
@@ -97,7 +98,7 @@ class TracingToolset(WrapperToolset[SolverDeps]):
 def _build_toolset(deps: SolverDeps) -> FunctionToolset[SolverDeps]:
     """Build the raw toolset for a solver agent."""
     tools = [bash, read_file, write_file, list_files, submit_flag, web_fetch,
-             webhook_create, webhook_get_requests, check_findings, notify_coordinator]
+             webhook_create, webhook_get_requests, check_findings, notify_coordinator, note]
     if deps.use_vision:
         tools.append(view_image)
     return FunctionToolset(tools=tools, max_retries=4)
@@ -152,6 +153,10 @@ class Solver:
         self._flag: str | None = None
         self._confirmed: bool = False
         self._findings: str = ""
+        # Wire the note tool to write into this solver's trace.
+        self.deps.note_fn = lambda content: self.tracer.event(
+            "note", content=content[:2000], step=self._step_count[0]
+        )
 
     async def start(self) -> None:
         """Start the sandbox and build the agent."""

@@ -192,6 +192,25 @@ class ClaudeSolver:
                         }
                     }
 
+                # Intercept `note <content>` — record a finding for post-mortem.
+                # shlex parsing handles quoting cleanly across the various ways
+                # a model might invoke it.
+                if command.strip().startswith("note "):
+                    try:
+                        parts = shlex.split(command.strip(), posix=True)
+                    except ValueError:
+                        parts = []
+                    if parts and parts[0] == "note" and len(parts) >= 2:
+                        note_content = " ".join(parts[1:])
+                        self.tracer.event("note", content=note_content[:2000], step=self._step_count)
+                        return {
+                            "hookSpecificOutput": {
+                                "hookEventName": "PreToolUse",
+                                "permissionDecision": "allow",
+                                "updatedInput": {**tool_input, "command": "echo 'noted.'"},
+                            }
+                        }
+
                 # Rewrite command to run in the Docker container
                 escaped = shlex.quote(command)
                 rewritten = f"docker exec -i {self._container_id} bash -c {escaped}"

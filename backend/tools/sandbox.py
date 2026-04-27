@@ -81,3 +81,24 @@ async def webhook_create(ctx: RunContext[SolverDeps]) -> str:
 async def webhook_get_requests(ctx: RunContext[SolverDeps], uuid: str) -> str:
     """Retrieve HTTP requests received by a webhook.site token."""
     return await do_webhook_get_requests(uuid)
+
+
+async def note(ctx: RunContext[SolverDeps], content: str) -> str:
+    """Record a key insight, finding, working payload, or dead end for the
+    post-mortem writeup.
+
+    Call this whenever you've identified something worth preserving:
+    - a vulnerability with a brief description and the proof
+    - a working exploit payload or snippet (paste the actual code/request)
+    - a dead end with the reason you ruled it out
+    - a generalizable technique you used
+
+    These notes are stitched into a writeup at the end of the run; they do
+    not affect whether the flag is accepted. Be concise — one or two lines.
+    """
+    if ctx.deps.note_fn:
+        try:
+            ctx.deps.note_fn(content)
+        except Exception:
+            pass
+    return "noted."
