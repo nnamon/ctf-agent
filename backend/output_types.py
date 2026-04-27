@@ -24,24 +24,26 @@ def solver_output_json_schema() -> dict:
     """JSON schema for solver structured output — shared by Claude SDK and Codex.
 
     Two modes:
-      * `flag_found` requires `flag` + `method`. Used only when the solver has
-        actually executed the exploit and read the real flag value.
-      * `gave_up` requires `reason`. Used when the solver has genuinely
-        exhausted its ideas. Emitting this lets the swarm bump-and-retry with
-        sibling insights instead of misreading a placeholder string as a win.
+      * `flag_found` populates `flag` + `method`, leaves `reason` null. Used
+        only when the solver has actually executed the exploit and read the
+        real flag value.
+      * `gave_up` populates `reason`, leaves `flag` + `method` null. Used when
+        the solver has genuinely exhausted its ideas; lets the swarm
+        bump-and-retry instead of misreading a placeholder string as a win.
 
-    Required-field-per-mode is enforced by the parsing code, not the schema —
-    OpenAI's structured-output endpoints only accept a strict subset of JSON
-    Schema where `oneOf` discriminated unions are flaky.
+    OpenAI's strict structured-output endpoints require every property in
+    `required` and reject `oneOf` discriminated unions, so the schema is a
+    flat object with nullable string fields and the per-mode required
+    populating is enforced by the parsing code.
     """
     return {
         "type": "object",
         "properties": {
             "type": {"type": "string", "enum": ["flag_found", "gave_up"]},
-            "flag": {"type": "string"},
-            "method": {"type": "string"},
-            "reason": {"type": "string"},
+            "flag": {"type": ["string", "null"]},
+            "method": {"type": ["string", "null"]},
+            "reason": {"type": ["string", "null"]},
         },
-        "required": ["type"],
+        "required": ["type", "flag", "method", "reason"],
         "additionalProperties": False,
     }

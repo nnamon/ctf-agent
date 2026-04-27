@@ -521,18 +521,21 @@ class CodexSolver:
             if self._structured_output:
                 out_type = self._structured_output.get("type")
                 if out_type == "flag_found":
-                    flag_val = str(self._structured_output.get("flag", "")).strip()
+                    # Schema permits null on flag/method (the gave_up branch
+                    # leaves them null); use `or ""` so JSON null doesn't
+                    # stringify to "None".
+                    flag_val = (self._structured_output.get("flag") or "").strip()
                     if flag_val:
+                        method = self._structured_output.get("method") or "(unspecified)"
                         self._flag = flag_val
-                        self._findings = (
-                            f"Flag found via {self._structured_output.get('method', '?')}: {flag_val}"
-                        )
+                        self._findings = f"Flag found via {method}: {flag_val}"
                         if self.no_submit:
                             self._confirmed = True
                     else:
                         self._findings = "Empty flag in flag_found output — treating as gave_up."
                 elif out_type == "gave_up":
-                    self._findings = f"Gave up: {self._structured_output.get('reason', '(no reason given)')}"
+                    reason = self._structured_output.get("reason") or "(no reason given)"
+                    self._findings = f"Gave up: {reason}"
 
             if self._confirmed and self._flag:
                 return self._result(FLAG_FOUND)
