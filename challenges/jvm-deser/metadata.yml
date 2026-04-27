@@ -1,0 +1,10 @@
+name: Token Service
+category: misc
+value: 350
+description: |
+  We built a tiny session-token authentication service. Drop in your
+  token to log in.
+connection_info: nc host.docker.internal 9300
+tags:
+  - java
+  - deserialization

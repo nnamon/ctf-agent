@@ -1,0 +1,15 @@
+name: Web Vault
+category: web
+value: 200
+description: |
+  Try our brand new note vault! Sign in to keep your daily notes
+  in one place. We're still in beta — the dashboard is currently
+  bare, but new features are rolling out soon.
+
+  Demo accounts: `guest / guest`
+
+  Find the flag.
+connection_info: http://host.docker.internal:9100
+tags:
+  - blackbox
+  - web

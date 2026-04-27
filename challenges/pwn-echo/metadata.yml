@@ -1,0 +1,9 @@
+name: Echo Service
+category: pwn
+value: 300
+description: |
+  We hosted a tiny echo server. Knock it over.
+connection_info: nc host.docker.internal 9200
+tags:
+  - pwn
+  - x64

@@ -7,8 +7,15 @@ logs/
 *.log
 *.jsonl
 
-# Challenge data (downloaded at runtime)
-challenges*/
+# Challenges fetched at runtime (CTFd pull) are excluded by default.
+# Test-benchmark challenges are whitelisted below; their distfiles are
+# still excluded since `./build.sh` regenerates them.
+challenges_*/
+challenges/*/
+!challenges/web-vault/
+!challenges/pwn-echo/
+!challenges/jvm-deser/
+challenges/*/distfiles/
 
 # Python
 __pycache__/
