@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 DEFAULT_MODELS: list[str] = [
     "claude-sdk/claude-opus-4-6/medium",
     "claude-sdk/claude-opus-4-6/max",
+    "codex/gpt-5.5",
     "codex/gpt-5.4",
     "codex/gpt-5.4-mini",
     "codex/gpt-5.3-codex",
@@ -30,6 +31,7 @@ DEFAULT_MODELS: list[str] = [
 CONTEXT_WINDOWS: dict[str, int] = {
     "us.anthropic.claude-opus-4-6-v1": 1_000_000,
     "claude-opus-4-6": 1_000_000,
+    "gpt-5.5": 1_000_000,
     "gpt-5.4": 1_000_000,
     "gpt-5.4-mini": 400_000,
     "gpt-5.3-codex": 1_000_000,
@@ -41,6 +43,7 @@ CONTEXT_WINDOWS: dict[str, int] = {
 VISION_MODELS: set[str] = {
     "us.anthropic.claude-opus-4-6-v1",
     "claude-opus-4-6",
+    "gpt-5.5",
     "gpt-5.4",
     "gpt-5.4-mini",
     "gemini-3-flash-preview",

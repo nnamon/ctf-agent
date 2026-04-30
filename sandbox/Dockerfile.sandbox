@@ -183,6 +183,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends software-proper
     && python3.12 -m pip install --no-cache-dir trailmark \
     && rm -rf /var/lib/apt/lists/*
 
+# ── FLARE malware-RE toolkit + Windows-PE emulators ─────────────────────────
+# Use python3.10 explicitly (system pip3 was rebound to python3.12 by the
+# trailmark layer above; pip3 alone would install to the wrong interpreter).
+# - flare-floss/capa : string deobfuscation + capability ID
+# - lief / yara-python / keystone-engine : binary analysis basics
+# - viv-utils / pyelftools : helpers for the above
+# - speakeasy-emulator : Mandiant's PE emulator with full Windows API + CNG
+# - qiling             : multi-arch/multi-OS emulator (Windows PE on aarch64)
+RUN python3 -m pip install --no-cache-dir \
+    flare-floss \
+    flare-capa \
+    lief \
+    yara-python \
+    keystone-engine \
+    viv-utils \
+    pyelftools \
+    speakeasy-emulator \
+    qiling
+
 # ── Tools reference ──────────────────────────────────────────────────────────
 COPY sandbox/sandbox-tools.txt /tools.txt
 
