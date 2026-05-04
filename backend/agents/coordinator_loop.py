@@ -39,6 +39,8 @@ def build_deps(
         token=settings.ctfd_token,
         username=settings.ctfd_user,
         password=settings.ctfd_pass,
+        session_cookie=getattr(settings, "ctfd_session_cookie", ""),
+        csrf_token=getattr(settings, "ctfd_csrf_token", ""),
         attempt_log_path=getattr(settings, "attempt_log_path", None),
     )
     cost_tracker = CostTracker()

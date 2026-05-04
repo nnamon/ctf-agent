@@ -15,7 +15,7 @@ from pathlib import Path
 
 from backend.backends.attempt_log import AttemptLogBackend
 from backend.backends.base import Attempt, Backend, SubmitResult
-from backend.backends.ctfd import CTFdBackend
+from backend.backends.ctfd import CTFdBackend, CTFdSessionBackend
 from backend.backends.local import LocalBackend
 
 
@@ -26,13 +26,20 @@ def make_backend(
     token: str = "",
     username: str = "admin",
     password: str = "admin",
+    session_cookie: str = "",
+    csrf_token: str = "",
     attempt_log_path: str | Path | None = None,
 ) -> Backend:
     """Construct a backend by kind, optionally wrapped with attempt-logging.
 
-    `kind` overrides URL-based detection. If unset, falls back to:
-      - "local" when base_url is empty / "local" / "none" / "http://unused.invalid"
-      - "ctfd"  otherwise
+    `kind` overrides URL-based detection. Auto-selection rules (when
+    `kind` is None):
+      - "local"        when base_url is empty / "local" / "none" /
+                       "http://unused.invalid"
+      - "ctfd-session" when a session_cookie is provided
+                       (use this for CTFd instances behind email-confirm
+                       gates that block API tokens)
+      - "ctfd"         otherwise
 
     If `attempt_log_path` is set, the chosen backend is wrapped in an
     AttemptLogBackend that persists every flag submission to that SQLite
@@ -42,6 +49,8 @@ def make_backend(
         u = (base_url or "").strip().lower()
         if not u or u in {"local", "none"} or u.startswith("http://unused"):
             kind = "local"
+        elif session_cookie:
+            kind = "ctfd-session"
         else:
             kind = "ctfd"
 
@@ -50,6 +59,17 @@ def make_backend(
         inner: Backend = CTFdBackend(
             base_url=base_url, token=token, username=username, password=password
         )
+    elif kind in ("ctfd-session", "ctfd_session", "ctfdsession"):
+        inner = CTFdSessionBackend(
+            base_url=base_url,
+            token=token,                       # optional, kept for fall-through
+            username=username, password=password,
+            session_cookie=session_cookie,
+        )
+        # If operator pre-extracted the CSRF nonce, install it so the first
+        # POST doesn't need to scrape /challenges. Bound to the same session.
+        if csrf_token:
+            inner._csrf_token = csrf_token
     elif kind == "local":
         inner = LocalBackend()
     else:
@@ -62,6 +82,6 @@ def make_backend(
 
 __all__ = [
     "Attempt", "Backend", "SubmitResult",
-    "CTFdBackend", "LocalBackend", "AttemptLogBackend",
+    "CTFdBackend", "CTFdSessionBackend", "LocalBackend", "AttemptLogBackend",
     "make_backend",
 ]

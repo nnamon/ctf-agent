@@ -268,3 +268,61 @@ class CTFdBackend(Backend):
     async def close(self) -> None:
         if self._client:
             await self._client.aclose()
+
+
+@dataclass
+class CTFdSessionBackend(CTFdBackend):
+    """CTFd backend that authenticates via a captured browser session cookie.
+
+    Use when:
+      - the API token can't be issued (e.g. CTFd's email-verification gate
+        forbids token creation until you click a verification link),
+      - or the deployment exposes only the web UI and not the API token UI,
+      - or you simply have a logged-in browser session and want to skip
+        scripted form-login.
+
+    How to grab the inputs from a browser:
+      1. Log in to the CTF in your browser.
+      2. Open devtools → Application → Cookies, copy the value of `session`.
+      3. (optional) View source on /challenges, find `csrfNonce: "..."`,
+         copy that string. If you skip this, the backend scrapes it on the
+         first request — but the scraped value is bound to the cookie, so
+         providing it pre-extracted just saves one round trip.
+
+    Wiring (CLI):
+      ctf-solve --ctfd-url https://ctf.example.com \
+                --ctfd-session <SESSION_COOKIE_VALUE> \
+                [--ctfd-csrf <NONCE>]              # optional
+
+    Wiring (.env):
+      CTFD_URL=https://ctf.example.com
+      CTFD_SESSION_COOKIE=...
+      CTFD_CSRF_TOKEN=...                          # optional
+    """
+
+    session_cookie: str = ""
+
+    async def _ensure_client(self) -> httpx.AsyncClient:
+        client = await super()._ensure_client()
+        # Install the cookie on the persistent client so every request carries
+        # it — including the CSRF scrape, the submission POST, and any pulls.
+        if self.session_cookie and "session" not in client.cookies:
+            client.cookies.set("session", self.session_cookie)
+        return client
+
+    async def _ensure_logged_in(self) -> None:
+        # The captured cookie *is* the login. Skip the form-login flow.
+        if self.session_cookie:
+            self._logged_in = True
+            await self._ensure_client()  # ensure cookie is installed
+            return
+        await super()._ensure_logged_in()
+
+    def _base_headers(self) -> dict[str, str]:
+        h = super()._base_headers()
+        # Prefer cookie-based auth: drop the Authorization: Token header if
+        # we're using a session cookie, since CTFd's API checks token first
+        # and a stale token would 401 us before the cookie is consulted.
+        if self.session_cookie:
+            h.pop("Authorization", None)
+        return h

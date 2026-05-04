@@ -31,6 +31,12 @@ def _setup_logging(verbose: bool = False) -> None:
 @click.command()
 @click.option("--ctfd-url", default=None, help="CTFd URL (overrides .env)")
 @click.option("--ctfd-token", default=None, help="CTFd API token (overrides .env)")
+@click.option("--ctfd-session", default=None,
+              help="CTFd session-cookie value (overrides .env CTFD_SESSION_COOKIE). "
+                   "Use when API token is unavailable, e.g. behind an email-confirm gate.")
+@click.option("--ctfd-csrf", default=None,
+              help="Pre-extracted CTFd CSRF nonce (overrides .env CTFD_CSRF_TOKEN). "
+                   "Optional — backend scrapes /challenges if omitted. Bound to the session cookie.")
 @click.option("--image", default="ctf-sandbox", help="Docker sandbox image name")
 @click.option("--models", multiple=True, help="Model specs (default: all configured)")
 @click.option("--challenge", default=None, help="Solve a single challenge directory")
@@ -50,6 +56,8 @@ def _setup_logging(verbose: bool = False) -> None:
 def main(
     ctfd_url: str | None,
     ctfd_token: str | None,
+    ctfd_session: str | None,
+    ctfd_csrf: str | None,
     image: str,
     models: tuple[str, ...],
     challenge: str | None,
@@ -76,6 +84,10 @@ def main(
         settings.ctfd_url = ctfd_url
     if ctfd_token:
         settings.ctfd_token = ctfd_token
+    if ctfd_session:
+        settings.ctfd_session_cookie = ctfd_session
+    if ctfd_csrf:
+        settings.ctfd_csrf_token = ctfd_csrf
     settings.max_concurrent_challenges = max_challenges
     settings.attempt_log_path = None if no_attempt_log else attempt_log_path
 
@@ -131,6 +143,8 @@ async def _run_single(
         token=settings.ctfd_token,
         username=settings.ctfd_user,
         password=settings.ctfd_pass,
+        session_cookie=getattr(settings, "ctfd_session_cookie", ""),
+        csrf_token=getattr(settings, "ctfd_csrf_token", ""),
         attempt_log_path=getattr(settings, "attempt_log_path", None),
     )
     cost_tracker = CostTracker()

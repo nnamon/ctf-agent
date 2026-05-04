@@ -34,4 +34,10 @@ class Settings(BaseSettings):
     # The CLI's --attempt-log-path / --no-attempt-log flags overwrite this.
     attempt_log_path: str | None = "logs/attempts.db"
 
+    # CTFd session-cookie auth (used when API token is unavailable, e.g.
+    # behind an email-confirmation gate). When set, make_backend() routes
+    # to CTFdSessionBackend instead of CTFdBackend.
+    ctfd_session_cookie: str = ""
+    ctfd_csrf_token: str = ""  # optional pre-extracted nonce; bound to the cookie
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
