@@ -17,6 +17,7 @@ from backend.backends.attempt_log import AttemptLogBackend
 from backend.backends.base import Attempt, Backend, SubmitResult
 from backend.backends.ctfd import CTFdBackend, CTFdSessionBackend
 from backend.backends.local import LocalBackend
+from backend.backends.manual_confirm import ManualConfirmBackend
 
 
 def make_backend(
@@ -29,8 +30,9 @@ def make_backend(
     session_cookie: str = "",
     csrf_token: str = "",
     attempt_log_path: str | Path | None = None,
+    manual_confirm: bool = False,
 ) -> Backend:
-    """Construct a backend by kind, optionally wrapped with attempt-logging.
+    """Construct a backend by kind, optionally wrapped with decorators.
 
     `kind` overrides URL-based detection. Auto-selection rules (when
     `kind` is None):
@@ -41,9 +43,14 @@ def make_backend(
                        gates that block API tokens)
       - "ctfd"         otherwise
 
-    If `attempt_log_path` is set, the chosen backend is wrapped in an
-    AttemptLogBackend that persists every flag submission to that SQLite
-    file and short-circuits known-incorrect flags. Pass None to disable.
+    Decorator stack (innermost first):
+      1. concrete backend (CTFd / CTFdSession / Local)
+      2. AttemptLogBackend   if attempt_log_path is set
+      3. ManualConfirmBackend if manual_confirm is True
+
+    Order matters: ManualConfirmBackend is outermost, so the operator's
+    "deny" never reaches the AttemptLog (no row for refused submissions).
+    A confirmed flag DOES land in AttemptLog as usual.
     """
     if kind is None:
         u = (base_url or "").strip().lower()
@@ -76,12 +83,15 @@ def make_backend(
         raise ValueError(f"unknown backend kind: {kind!r}")
 
     if attempt_log_path is not None:
-        return AttemptLogBackend(inner=inner, db_path=Path(attempt_log_path))
+        inner = AttemptLogBackend(inner=inner, db_path=Path(attempt_log_path))
+    if manual_confirm:
+        inner = ManualConfirmBackend(inner=inner)
     return inner
 
 
 __all__ = [
     "Attempt", "Backend", "SubmitResult",
-    "CTFdBackend", "CTFdSessionBackend", "LocalBackend", "AttemptLogBackend",
+    "CTFdBackend", "CTFdSessionBackend", "LocalBackend",
+    "AttemptLogBackend", "ManualConfirmBackend",
     "make_backend",
 ]

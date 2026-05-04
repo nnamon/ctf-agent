@@ -42,6 +42,7 @@ def build_deps(
         session_cookie=getattr(settings, "ctfd_session_cookie", ""),
         csrf_token=getattr(settings, "ctfd_csrf_token", ""),
         attempt_log_path=getattr(settings, "attempt_log_path", None),
+        manual_confirm=getattr(settings, "manual_confirm", False),
     )
     cost_tracker = CostTracker()
     specs = model_specs or list(DEFAULT_MODELS)

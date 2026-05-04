@@ -52,6 +52,12 @@ def _setup_logging(verbose: bool = False) -> None:
               help="SQLite file persisting flag attempts; used to short-circuit duplicate-rejected flags and inject 'already-rejected' history into prompts.")
 @click.option("--no-attempt-log", is_flag=True,
               help="Disable persistent attempt logging (default: enabled).")
+@click.option("--confirm-flags", "confirm_flags", is_flag=True,
+              help="Pause for stdin operator approval before each flag "
+                   "submission. Useful when penalties are expensive or "
+                   "you're vetting a new model. Denies fall straight back "
+                   "to the solver as 'incorrect — operator-denied' without "
+                   "burning a real attempt. Requires a TTY.")
 @click.option("--context", "context_files", multiple=True, type=click.Path(),
               help="Attach a file to the solver as prior-chain context. "
                    "Mounted read-only at /challenge/context/<basename>; text-ish "
@@ -83,6 +89,7 @@ def main(
     writeup_model: str,
     attempt_log_path: str,
     no_attempt_log: bool,
+    confirm_flags: bool,
     context_files: tuple[str, ...],
     preserve_workspace: bool,
     verbose: bool,
@@ -104,6 +111,7 @@ def main(
         settings.ctfd_csrf_token = ctfd_csrf
     settings.max_concurrent_challenges = max_challenges
     settings.attempt_log_path = None if no_attempt_log else attempt_log_path
+    settings.manual_confirm = confirm_flags
 
     # Orchestration: --context FILE (repeatable) and --preserve-workspace.
     # The preserve path is rooted at runs/<RUN_ID>/<challenge_slug>/, derived
@@ -172,6 +180,7 @@ async def _run_single(
         session_cookie=getattr(settings, "ctfd_session_cookie", ""),
         csrf_token=getattr(settings, "ctfd_csrf_token", ""),
         attempt_log_path=getattr(settings, "attempt_log_path", None),
+        manual_confirm=getattr(settings, "manual_confirm", False),
     )
     cost_tracker = CostTracker()
 

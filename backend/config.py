@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     # The CLI's --attempt-log-path / --no-attempt-log flags overwrite this.
     attempt_log_path: str | None = "logs/attempts.db"
 
+    # When True, every flag submission pauses for stdin operator approval
+    # before reaching the inner backend. Set via CLI --confirm-flags.
+    manual_confirm: bool = False
+
     # CTFd session-cookie auth (used when API token is unavailable, e.g.
     # behind an email-confirmation gate). When set, make_backend() routes
     # to CTFdSessionBackend instead of CTFdBackend.
