@@ -42,7 +42,7 @@ def _setup_logging(verbose: bool = False) -> None:
 @click.option("--challenge", default=None, help="Solve a single challenge directory")
 @click.option("--challenges-dir", default="challenges", help="Directory for challenge files")
 @click.option("--no-submit", is_flag=True, help="Dry run — don't submit flags")
-@click.option("--coordinator-model", default=None, help="Model for coordinator (default: claude-opus-4-6)")
+@click.option("--coordinator-model", default=None, help="Model for coordinator (default: claude-opus-4-7)")
 @click.option("--coordinator", default="claude", type=click.Choice(["claude", "codex"]), help="Coordinator backend")
 @click.option("--max-challenges", default=10, type=int, help="Max challenges solved concurrently")
 @click.option("--msg-port", default=0, type=int, help="Dashboard / operator-message port (0 = auto)")
@@ -51,7 +51,7 @@ def _setup_logging(verbose: bool = False) -> None:
                    "LAN/VPN). Use 127.0.0.1 for localhost-only — there is "
                    "no auth, anyone who can reach the port can kill swarms.")
 @click.option("--no-writeup", is_flag=True, help="Skip the post-mortem writeup after each solve")
-@click.option("--writeup-model", default="claude-opus-4-6", help="Model used to generate the post-mortem writeup")
+@click.option("--writeup-model", default="claude-opus-4-7", help="Model used to generate the post-mortem writeup")
 @click.option("--session", "session_name", default=None,
               help="Active session name. Resolves to sessions/<NAME>/ for "
                    "challenges, writeups, logs, runs. Falls back to "
@@ -196,7 +196,7 @@ async def _run_single(
     no_submit: bool,
     max_challenges: int,
     no_writeup: bool = False,
-    writeup_model: str = "claude-opus-4-6",
+    writeup_model: str = "claude-opus-4-7",
 ) -> None:
     """Run a single challenge with a swarm."""
     import time
@@ -360,7 +360,7 @@ async def _run_coordinator(
     msg_port: int = 0,
     msg_host: str = "0.0.0.0",
     no_writeup: bool = False,
-    writeup_model: str = "claude-opus-4-6",
+    writeup_model: str = "claude-opus-4-7",
 ) -> None:
     """Run the full coordinator (continuous until Ctrl+C)."""
     from backend.sandbox import cleanup_orphan_containers, configure_semaphore

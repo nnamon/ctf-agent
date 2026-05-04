@@ -137,7 +137,7 @@ COORDINATOR_TOOLS = [
 class CodexCoordinator:
     """Coordinator using Codex App Server JSON-RPC."""
 
-    def __init__(self, deps: CoordinatorDeps, model: str = "gpt-5.4") -> None:
+    def __init__(self, deps: CoordinatorDeps, model: str = "gpt-5.5") -> None:
         self.deps = deps
         self.model = model
         self._proc: asyncio.subprocess.Process | None = None
@@ -331,7 +331,7 @@ async def run_codex_coordinator(
     msg_port: int = 0,
     msg_host: str = "0.0.0.0",
     no_writeup: bool = False,
-    writeup_model: str = "claude-opus-4-6",
+    writeup_model: str = "claude-opus-4-7",
 ) -> dict[str, Any]:
     """Run the Codex coordinator with the shared event loop."""
     ctfd, cost_tracker, deps = build_deps(
@@ -341,7 +341,7 @@ async def run_codex_coordinator(
     deps.msg_port = msg_port
     deps.msg_host = msg_host
 
-    resolved_model = coordinator_model or "gpt-5.4"
+    resolved_model = coordinator_model or "gpt-5.5"
     coordinator = CodexCoordinator(deps, model=resolved_model)
     await coordinator.start()
 

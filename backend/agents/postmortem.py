@@ -68,7 +68,7 @@ Structure:
 
 When notes from multiple solvers are provided, synthesize across them — the
 winner had the path that worked, but siblings often noted something the winner
-didn't see. Cite the source solver inline when relevant ("`gpt-5.4` noted
+didn't see. Cite the source solver inline when relevant ("`gpt-5.5` noted
 that...").
 
 Do not invent payloads, requests, or vulnerabilities that don't appear in the
@@ -261,7 +261,7 @@ async def generate_writeup(
     cost_usd: float,
     duration_s: float,
     out_dir: Path = Path("writeups"),
-    model: str = "claude-opus-4-6",
+    model: str = "claude-opus-4-7",
 ) -> Path | None:
     """Generate a markdown writeup. Returns the file path on success, None on failure.
 

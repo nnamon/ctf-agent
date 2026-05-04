@@ -22,8 +22,21 @@ PROVIDER_MAP: dict[str, str] = {
     "google": "google",
 }
 
-# Fallback pricing for models not in genai-prices (per 1M tokens, USD)
+# Fallback pricing for models not in genai-prices (per 1M tokens, USD).
+# Newer model entries default to the previous-gen pricing; adjust if upstream
+# rates differ. Older entries kept so historical usage_log rows still resolve.
 FALLBACK_PRICING: dict[str, dict[str, float]] = {
+    # Anthropic Opus
+    "us.anthropic.claude-opus-4-7-v1": {
+        "input": 5.00,
+        "cached_input": 0.50,
+        "output": 25.00,
+    },
+    "claude-opus-4-7": {
+        "input": 5.00,
+        "cached_input": 0.50,
+        "output": 25.00,
+    },
     "us.anthropic.claude-opus-4-6-v1": {
         "input": 5.00,
         "cached_input": 0.50,
@@ -34,10 +47,16 @@ FALLBACK_PRICING: dict[str, dict[str, float]] = {
         "cached_input": 0.50,
         "output": 25.00,
     },
+    # OpenAI GPT-5.x
     "gpt-5.5": {
         "input": 5.00,
         "cached_input": 0.50,
         "output": 25.00,
+    },
+    "gpt-5.5-mini": {
+        "input": 0.75,
+        "cached_input": 0.075,
+        "output": 4.50,
     },
     "gpt-5.4-mini": {
         "input": 0.75,

@@ -31,7 +31,7 @@ def build_deps(
     challenge_dirs: dict[str, str] | None = None,
     challenge_metas: dict[str, ChallengeMeta] | None = None,
     no_writeup: bool = False,
-    writeup_model: str = "claude-opus-4-6",
+    writeup_model: str = "claude-opus-4-7",
 ) -> tuple[Backend, CostTracker, CoordinatorDeps]:
     """Create the backend, cost tracker, and coordinator deps."""
     ctfd = make_backend(

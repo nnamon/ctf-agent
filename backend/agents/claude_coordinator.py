@@ -114,7 +114,7 @@ async def run_claude_coordinator(
     msg_port: int = 0,
     msg_host: str = "0.0.0.0",
     no_writeup: bool = False,
-    writeup_model: str = "claude-opus-4-6",
+    writeup_model: str = "claude-opus-4-7",
 ) -> dict[str, Any]:
     """Run the Claude Agent SDK coordinator with the shared event loop."""
     ctfd, cost_tracker, deps = build_deps(
@@ -125,7 +125,7 @@ async def run_claude_coordinator(
     deps.msg_host = msg_host
 
     mcp_server = _build_coordinator_mcp(deps)
-    resolved_model = coordinator_model or "claude-opus-4-6"
+    resolved_model = coordinator_model or "claude-opus-4-7"
 
     allowed = {
         "mcp__coordinator__fetch_challenges", "mcp__coordinator__get_solve_status",

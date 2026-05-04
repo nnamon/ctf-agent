@@ -19,19 +19,21 @@ if TYPE_CHECKING:
 
 # Default model specs — claude-sdk and codex providers use the new solver backends
 DEFAULT_MODELS: list[str] = [
-    "claude-sdk/claude-opus-4-6/medium",
-    "claude-sdk/claude-opus-4-6/max",
+    "claude-sdk/claude-opus-4-7/medium",
+    "claude-sdk/claude-opus-4-7/max",
     "codex/gpt-5.5",
-    "codex/gpt-5.4",
-    "codex/gpt-5.4-mini",
-    "codex/gpt-5.3-codex",
+    "codex/gpt-5.5-mini",
 ]
 
-# Context window sizes (tokens)
+# Context window sizes (tokens). Older model entries kept for backward compat
+# with existing usage logs / persisted cost rows.
 CONTEXT_WINDOWS: dict[str, int] = {
+    "us.anthropic.claude-opus-4-7-v1": 1_000_000,
+    "claude-opus-4-7": 1_000_000,
     "us.anthropic.claude-opus-4-6-v1": 1_000_000,
     "claude-opus-4-6": 1_000_000,
     "gpt-5.5": 1_000_000,
+    "gpt-5.5-mini": 400_000,
     "gpt-5.4": 1_000_000,
     "gpt-5.4-mini": 400_000,
     "gpt-5.3-codex": 1_000_000,
@@ -41,9 +43,12 @@ CONTEXT_WINDOWS: dict[str, int] = {
 
 # Models that support vision
 VISION_MODELS: set[str] = {
+    "us.anthropic.claude-opus-4-7-v1",
+    "claude-opus-4-7",
     "us.anthropic.claude-opus-4-6-v1",
     "claude-opus-4-6",
     "gpt-5.5",
+    "gpt-5.5-mini",
     "gpt-5.4",
     "gpt-5.4-mini",
     "gemini-3-flash-preview",
@@ -143,7 +148,7 @@ def provider_from_spec(spec: str) -> str:
 
 
 def effort_from_spec(spec: str) -> str | None:
-    """Extract effort level from a spec like 'claude-sdk/claude-opus-4-6/max'."""
+    """Extract effort level from a spec like 'claude-sdk/claude-opus-4-7/max'."""
     parts = spec.split("/")
     if len(parts) >= 3 and parts[2] in ("low", "medium", "high", "max"):
         return parts[2]

@@ -52,7 +52,7 @@ class CoordinatorDeps:
 
     # Post-mortem writeup config
     no_writeup: bool = False
-    writeup_model: str = "claude-opus-4-6"
+    writeup_model: str = "claude-opus-4-7"
 
     # Runtime state
     coordinator_inbox: asyncio.Queue = field(default_factory=asyncio.Queue)
