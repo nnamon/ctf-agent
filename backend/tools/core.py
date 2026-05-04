@@ -223,13 +223,23 @@ def _multi_prefix(env_name: str) -> str:
     return f"[{env_name}]\n"
 
 
+class _EnvUnreachable(Exception):
+    """Raised by `_resolve_env` when an env can't be obtained — either
+    its name isn't registered, or its `.start()` timed out. Caught by
+    the per-tool dispatchers so the failure surfaces as a tool result
+    string the agent can react to instead of an unhandled exception."""
+
+
 async def _resolve_env(registry: "EnvRegistry", target: str) -> "ExecEnv":
     if not registry.has(target):
-        raise KeyError(
+        raise _EnvUnreachable(
             f"Unknown env {target!r}. Available: {registry.names}. "
             f"Call list_envs() to see what's connected."
         )
-    return await registry.get(target)
+    try:
+        return await registry.get(target)
+    except TimeoutError as e:
+        raise _EnvUnreachable(str(e)) from e
 
 
 async def do_bash_target(
@@ -240,7 +250,7 @@ async def do_bash_target(
 ) -> str:
     try:
         env = await _resolve_env(registry, target)
-    except KeyError as e:
+    except _EnvUnreachable as e:
         return str(e)
     out = await do_bash(env, command, timeout_seconds)
     return _multi_prefix(env.name) + out
@@ -251,7 +261,7 @@ async def do_read_file_target(
 ) -> str:
     try:
         env = await _resolve_env(registry, target)
-    except KeyError as e:
+    except _EnvUnreachable as e:
         return str(e)
     out = await do_read_file(env, path)
     return _multi_prefix(env.name) + out
@@ -262,7 +272,7 @@ async def do_write_file_target(
 ) -> str:
     try:
         env = await _resolve_env(registry, target)
-    except KeyError as e:
+    except _EnvUnreachable as e:
         return str(e)
     return _multi_prefix(env.name) + await do_write_file(env, path, content)
 
@@ -272,7 +282,7 @@ async def do_list_files_target(
 ) -> str:
     try:
         env = await _resolve_env(registry, target)
-    except KeyError as e:
+    except _EnvUnreachable as e:
         return str(e)
     # Default to the env's scratch dir if no path given.
     p = path or env.scratch_dir or "/"
@@ -313,7 +323,7 @@ async def do_transfer(
     try:
         src = await _resolve_env(registry, src_env)
         dst = await _resolve_env(registry, dst_env)
-    except KeyError as e:
+    except _EnvUnreachable as e:
         return str(e)
     try:
         data = await src.read_file_bytes(src_path)

@@ -144,6 +144,14 @@ class EnvRegistry:
             for e in self._envs.values()
         ]
 
+    # Hard cap on env.start(). Any individual env's start can take a
+    # while (Docker pulls, pwn.college workspace pulls a fresh image),
+    # but we never want to leave a solver tool call blocked forever
+    # waiting on an env that's wedged. Beyond this, raise a
+    # TimeoutError so the tool call returns an error string the agent
+    # can react to.
+    START_TIMEOUT_S = 180
+
     async def get(self, name: str) -> ExecEnv:
         """Return a started env. Calls `.start()` on first access."""
         if name not in self._envs:
@@ -153,7 +161,21 @@ class EnvRegistry:
         async with self._locks[name]:
             if name not in self._started:
                 logger.info("Starting exec env: %s", name)
-                await self._envs[name].start()
+                try:
+                    await asyncio.wait_for(
+                        self._envs[name].start(),
+                        timeout=self.START_TIMEOUT_S,
+                    )
+                except TimeoutError as e:
+                    # Mark unstarted so a follow-up call can retry rather
+                    # than skipping start() entirely. Re-raise so the
+                    # caller surfaces the timeout to the agent.
+                    raise TimeoutError(
+                        f"Env {name!r} did not start within "
+                        f"{self.START_TIMEOUT_S}s — likely the underlying "
+                        f"target (e.g. pwn.college workspace POST) is hung. "
+                        f"Subsequent tool calls will retry."
+                    ) from e
                 self._started.add(name)
         return self._envs[name]
 
