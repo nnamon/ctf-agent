@@ -611,6 +611,19 @@ pre.log {
   background: var(--md-sys-color-surface-container-low);
 }
 
+/* Per-challenge coordinator-message form, lives at the bottom of the
+   detail panel. Same shape as the global form but tighter padding so
+   it doesn't dominate the panel. */
+.detail-msg {
+  display: flex; gap: 12px; align-items: center;
+  padding: 12px 20px;
+  background: var(--md-sys-color-surface-container-low);
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+  margin: 0;
+}
+.detail-msg .field { flex: 1; }
+.detail-msg input { font-size: 13px; padding: 8px 12px; }
+
 .empty-detail {
   padding: 24px;
   text-align: center;
@@ -1283,6 +1296,17 @@ function renderDetail(challenges) {
   // Writeup region (filled lazily by toggleWriteup)
   html += `<div class="writeup-region" id="writeup-${cNameEnc}" style="display:none"></div>`;
 
+  // Per-challenge coordinator-message form. Auto-prefixes the message
+  // with `[<challenge>] ` so the coordinator knows the context without
+  // the operator re-stating the challenge name. Plain message form at
+  // the bottom of <main> still works for non-challenge-specific notes.
+  const cName = c.challenge;
+  html += `<form class="detail-msg" onsubmit="return doMsgChal(event, '${cNameEnc}')">
+    <div class="field"><input type="text" id="detail-msg-${cNameEnc}"
+      placeholder="Message coordinator about ${escapeHTML(cName)}"></div>
+    <button type="submit" class="outlined small">Send</button>
+  </form>`;
+
   html += '</section>';
   detailHostEl.innerHTML = html;
 
@@ -1384,6 +1408,23 @@ async function doMsg(e) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({message: text})});
   document.getElementById('msg-text').value = '';
+  return false;
+}
+
+// Per-challenge coordinator message — auto-prefixes the body with
+// `[<challenge>] ` so the coordinator can tie the operator note to
+// the challenge in context without the user re-stating it.
+async function doMsgChal(e, nameEnc) {
+  e.preventDefault();
+  const input = document.getElementById('detail-msg-' + nameEnc);
+  if (!input) return false;
+  const text = input.value.trim();
+  if (!text) return false;
+  const challenge = decodeURIComponent(nameEnc);
+  await fetch('/api/msg', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({message: `[${challenge}] ${text}`})});
+  input.value = '';
   return false;
 }
 
@@ -1524,6 +1565,33 @@ function renderTrace(lines) {
         <span class="trace-time">${escapeHTML(t)}</span>
         <span class="trace-tag error">! ${escapeHTML(e.type)}${step}</span>
         <pre class="trace-body">${escapeHTML(JSON.stringify(e, null, 2))}</pre>
+      </div>`;
+    } else if (e.type === 'finish' || e.type === 'turn_complete' || e.type === 'stop' || e.type === 'flag_confirmed') {
+      // Terminal-state events: a multi-line JSON dump is overkill and
+      // makes the row tower over the inline tool rows. Render a one-
+      // line summary; the user can still see the raw JSON in the
+      // jsonl file if they need it.
+      let summary = '';
+      if (e.type === 'finish') {
+        const status = e.status || '?';
+        const flag = e.flag ? ` · ${e.flag}` : '';
+        const confirmed = e.confirmed ? ' ✓ confirmed' : '';
+        summary = `${status}${escapeHTML(flag)}${confirmed}`;
+      } else if (e.type === 'turn_complete') {
+        const dur = e.duration ? ` ${e.duration.toFixed(1)}s` : '';
+        const steps = e.steps !== undefined ? ` · ${e.steps} steps` : '';
+        summary = `done${dur}${steps}`;
+      } else if (e.type === 'stop') {
+        summary = `step_count=${e.step_count ?? '?'}`;
+      } else if (e.type === 'flag_confirmed') {
+        summary = e.flag || 'confirmed';
+      }
+      const tagCls = (e.type === 'finish' && e.status === 'flag_found')
+        || e.type === 'flag_confirmed' ? 'result' : '';
+      html += `<div class="trace-row">
+        <span class="trace-time">${escapeHTML(t)}</span>
+        <span class="trace-tag ${tagCls}">⏹ ${escapeHTML(e.type)}${step}</span>
+        <span class="trace-body">${summary}</span>
       </div>`;
     } else {
       html += `<div class="trace-row">
