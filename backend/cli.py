@@ -44,7 +44,11 @@ def _setup_logging(verbose: bool = False) -> None:
 @click.option("--no-submit", is_flag=True, help="Dry run — don't submit flags")
 @click.option("--coordinator-model", default=None, help="Model for coordinator (default: gpt-5.5 for codex, claude-opus-4-7 for claude)")
 @click.option("--coordinator", default="codex", type=click.Choice(["claude", "codex"]), help="Coordinator backend (default: codex)")
-@click.option("--max-challenges", default=10, type=int, help="Max challenges solved concurrently")
+@click.option("--max-challenges", default=None, type=int,
+              help="Max challenges solved concurrently. When omitted, the "
+                   "session's MAX_CONCURRENT_CHALLENGES env var (or its "
+                   "10-default) is used. Set this to 1 for platforms with "
+                   "a per-account workspace lock (pwn.college).")
 @click.option("--msg-port", default=13337, type=int,
               help="Dashboard / operator-message port. Default 13337 — falls "
                    "back to an auto-picked port if 13337 is already in use. "
@@ -147,7 +151,14 @@ def main(
     if not ctfd_session and overlay.get("ctfd_session_cookie"):
         settings.ctfd_session_cookie = overlay["ctfd_session_cookie"]
 
-    settings.max_concurrent_challenges = max_challenges
+    # Only override the env-configured concurrency if the operator
+    # explicitly passed --max-challenges. Otherwise keep what was loaded
+    # from the session's .env (e.g. MAX_CONCURRENT_CHALLENGES=1 for
+    # platforms with a per-account workspace lock like pwn.college).
+    if max_challenges is not None:
+        settings.max_concurrent_challenges = max_challenges
+    # Resolve the effective value used downstream — banner, capacity caps.
+    effective_max = settings.max_concurrent_challenges
     if no_attempt_log:
         settings.attempt_log_path = None
     elif attempt_log_path:
@@ -185,14 +196,14 @@ def main(
     console.print(f"  CTFd: {settings.ctfd_url}")
     console.print(f"  Models: {', '.join(model_specs)}")
     console.print(f"  Image: {settings.sandbox_image}")
-    console.print(f"  Max challenges: {max_challenges}")
+    console.print(f"  Max challenges: {effective_max}")
     console.print(f"  Attempt log: {settings.attempt_log_path or '(disabled)'}")
     console.print()
 
     if challenge:
-        asyncio.run(_run_single(settings, challenge, model_specs, no_submit, max_challenges, no_writeup, writeup_model))
+        asyncio.run(_run_single(settings, challenge, model_specs, no_submit, effective_max, no_writeup, writeup_model))
     else:
-        asyncio.run(_run_coordinator(settings, model_specs, challenges_dir, no_submit, coordinator_model, coordinator, max_challenges, msg_port, msg_host, no_writeup, writeup_model))
+        asyncio.run(_run_coordinator(settings, model_specs, challenges_dir, no_submit, coordinator_model, coordinator, effective_max, msg_port, msg_host, no_writeup, writeup_model))
 
 
 async def _run_single(

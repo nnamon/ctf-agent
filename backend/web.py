@@ -621,12 +621,174 @@ pre.log {
   color: var(--md-sys-color-outline);
 }
 
+/* "Now solving" status line in the top app bar. Renders one chip per
+   running swarm; the chip is clickable and pings the activity dot so
+   the bar shows the swarm is alive at a glance. Wraps cleanly on
+   mobile (the parent kv has flex-wrap from .app-bar). */
+.hdr-active { min-width: 0; flex: 0 1 auto; max-width: 100%; }
+.hdr-active .v {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  align-items: center;
+}
+.hdr-active .active-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px;
+  background: var(--md-success-bg);
+  border: 1px solid rgba(165, 214, 167, .35);
+  border-radius: 16px;
+  color: var(--md-success);
+  font-size: 12px; font-weight: 500;
+  font-family: "Roboto Mono", monospace;
+  cursor: pointer;
+  transition: background-color .15s, border-color .15s;
+  max-width: 220px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.hdr-active .active-chip::before {
+  content: "";
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--md-success);
+  box-shadow: 0 0 5px var(--md-success);
+  animation: pulse 1.4s infinite;
+  flex-shrink: 0;
+}
+.hdr-active .active-chip:hover {
+  background: rgba(165, 214, 167, .18);
+  border-color: rgba(165, 214, 167, .55);
+}
+.hdr-active .active-empty {
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant);
+  font-style: italic;
+}
+
 /* Inline glyph helper — small Unicode/text marker before button labels */
 .icon-inline {
   display: inline-block;
   margin-right: 6px;
   vertical-align: baseline;
   opacity: .9;
+}
+
+/* ── Mobile / small-screen overrides ───────────────────────────────
+   Below 640px the desktop layout falls apart in three places:
+     1. app-bar's 5-up `kv` flex chips wrap into 3+ rows
+     2. event/trace rows' fixed-width grid columns squeeze the body
+     3. the sticky side column anchors itself half-off-screen
+   The rules below collapse rows to one column, drop sticky, and bump
+   touch targets to ≥44px. Tight-phone (≤380px) gets one more pass to
+   shrink type and hide non-essential columns. */
+@media (max-width: 640px) {
+  /* App bar: pack tighter, reduce chip widths */
+  .app-bar {
+    padding: 8px 12px;
+    gap: 10px 16px;
+  }
+  .app-bar .brand {
+    font-size: 17px;
+    line-height: 22px;
+    gap: 8px;
+  }
+  .app-bar .kv .v { font-size: 13px; }
+  .app-bar .progress .track { width: 80px; }
+  /* Push 'now' + 'updated' onto their own line so the title doesn't stretch */
+  .hdr-active { width: 100%; margin-left: 0 !important; }
+  .hdr-active .active-chip { max-width: 100%; }
+  .app-bar .kv:last-child { width: 100%; }
+
+  main {
+    padding: 12px;
+    gap: 12px;
+  }
+  .card { padding: 12px 14px; }
+  .card h2 { font-size: 15px; line-height: 22px; }
+
+  /* Drop sticky on the events column — on a narrow viewport it pins
+     the panel to a useless mid-screen position. */
+  main > .col-side .card { position: static !important; top: auto !important; }
+
+  /* Tighter, single-column event rows */
+  .event-row {
+    grid-template-columns: auto 1fr;
+    gap: 4px 8px;
+    padding: 8px 4px;
+  }
+  .event-row .t { font-size: 10.5px; }
+  .event-row .k { font-size: 11px; }
+  .event-row .body { grid-column: 1 / -1; font-size: 12.5px; }
+
+  /* Same for trace rows */
+  .trace-row {
+    grid-template-columns: auto 1fr;
+    gap: 4px 8px;
+    padding: 6px 6px;
+  }
+  .trace-row .trace-body { grid-column: 1 / -1; }
+
+  /* Tile grid: smaller minimums + fall to one column when needed */
+  .tiles {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 10px;
+  }
+  .tile { padding: 12px 14px; }
+  .tile .value { font-size: 18px; line-height: 24px; }
+  .tile .name { font-size: 13px; }
+
+  /* Wider, taller touch targets — Apple HIG/MD3 say ≥44px */
+  button { padding: 10px 18px; min-height: 44px; }
+  button.small { padding: 6px 14px; min-height: 36px; font-size: 12px; }
+
+  /* Detail header: stack title + meta + close on its own row */
+  .detail-header {
+    flex-wrap: wrap;
+    padding: 12px 14px;
+    gap: 6px 10px;
+  }
+  .detail-header .title { font-size: 18px; line-height: 24px; flex: 1 1 auto; }
+  .detail-header .meta { width: 100%; font-size: 12px; }
+  .detail-header .close { width: 44px; height: 44px; }
+
+  /* Coordinator message form: stack input + button */
+  form { flex-direction: column; align-items: stretch; }
+  form button { width: 100%; }
+
+  /* Solvers table: tighter padding, allow actions to wrap */
+  .solvers th, .solvers td { padding: 8px 10px; font-size: 12px; }
+  .solvers td.actions {
+    text-align: left;
+    padding: 6px 10px;
+    white-space: normal;
+  }
+  .solvers td.actions button { margin: 2px 4px 2px 0; }
+
+  /* Code/log surfaces */
+  pre.log { font-size: 11px; max-height: 240px; padding: 10px; line-height: 1.55; }
+  .trace { max-height: 320px; padding: 6px; }
+  .writeup { padding: 14px 16px; max-height: 480px; font-size: 13px; }
+  .writeup-content h1 { font-size: 18px; }
+  .writeup-content h2 { font-size: 16px; }
+  .writeup-content h3 { font-size: 14px; }
+  .writeup-content pre { font-size: 11px; }
+}
+
+/* Tight-phone bucket — drop more chrome to keep type readable */
+@media (max-width: 380px) {
+  .app-bar { padding: 6px 10px; gap: 8px 12px; }
+  .app-bar .brand { font-size: 15px; }
+  .app-bar .kv:nth-child(3) { display: none; }   /* hide run-id chip */
+
+  main { padding: 8px; }
+  .card { padding: 10px 12px; }
+
+  .tiles {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .tile { padding: 10px 12px; gap: 4px; }
+  .tile .value { font-size: 16px; line-height: 22px; }
+  .tile .stats { font-size: 10px; }
+
+  .detail-header .title { font-size: 16px; line-height: 22px; }
 }
 </style></head>
 <body>
@@ -644,6 +806,15 @@ pre.log {
       <span class="track"><span class="fill" id="hdr-quota-fill" style="width:0%"></span></span>
       <span class="pct mono" id="hdr-quota-text"></span>
     </span>
+  </div>
+  <!-- Live "what's the swarm doing right now" line. Empty when no
+       swarm is running. Each chip is clickable and selects the
+       corresponding challenge tile. Truncates to the last path
+       segment (e.g. linux-luminarium/hello/hello → hello) but the
+       title attribute carries the full name. -->
+  <div class="kv hdr-active" id="hdr-active-wrap" style="display:none">
+    <span class="k">now</span>
+    <span class="v" id="hdr-active"></span>
   </div>
   <div class="kv" style="margin-left:auto"><span class="k">updated</span>
     <span class="v mono" id="hdr-time">—</span></div>
@@ -715,6 +886,35 @@ function renderHeader(s) {
     bar.classList.toggle('warn',   pct >= 80 && pct < 100);
   } else {
     quotaWrap.style.display = 'none';
+  }
+
+  // "Now solving" status line — chips for every running swarm.
+  // Click selects the corresponding tile so the operator can drill in.
+  const activeWrap = document.getElementById('hdr-active-wrap');
+  const activeBox = document.getElementById('hdr-active');
+  const running = (s.challenges || []).filter(c => c.status === 'running');
+  if (running.length === 0) {
+    activeWrap.style.display = 'none';
+    activeBox.innerHTML = '';
+  } else {
+    activeWrap.style.display = '';
+    activeBox.innerHTML = running.map(c => {
+      // Show the last path segment as the chip label; full name on hover.
+      const slug = c.challenge.split('/').pop();
+      const cost = c.cost_usd ? ` · ${fmtUsd(c.cost_usd)}` : '';
+      return `<span class="active-chip" data-name="${escapeHTML(c.challenge)}"
+                title="${escapeHTML(c.challenge)}">${escapeHTML(slug)}${escapeHTML(cost)}</span>`;
+    }).join('');
+    // Wire click → opens the tile's detail panel and scrolls to it.
+    for (const el of activeBox.querySelectorAll('.active-chip')) {
+      el.addEventListener('click', () => {
+        const name = el.getAttribute('data-name');
+        // selectChallenge takes a URL-encoded name (it decodes via
+        // decodeURIComponent). Use the same encoding so a name with
+        // slashes / Unicode round-trips cleanly.
+        selectChallenge(encodeURIComponent(name));
+      });
+    }
   }
 }
 
