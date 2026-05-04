@@ -548,12 +548,15 @@ RUN mkdir -p /opt/wordlists \
 RUN apt-get update; \
     set +e; \
     for pkg in \
-        gcc-aarch64-linux-gnu \
-        gcc-arm-linux-gnueabi gcc-arm-linux-gnueabihf \
-        gcc-mips-linux-gnu gcc-mipsel-linux-gnu \
-        gcc-mips64-linux-gnuabi64 \
-        gcc-riscv64-linux-gnu \
-        gcc-powerpc-linux-gnu gcc-powerpc64-linux-gnu \
+        gcc-aarch64-linux-gnu  libc6-dev-arm64-cross \
+        gcc-arm-linux-gnueabi  libc6-dev-armel-cross \
+        gcc-arm-linux-gnueabihf libc6-dev-armhf-cross \
+        gcc-mips-linux-gnu      libc6-dev-mips-cross \
+        gcc-mipsel-linux-gnu    libc6-dev-mipsel-cross \
+        gcc-mips64-linux-gnuabi64 libc6-dev-mips64-cross \
+        gcc-riscv64-linux-gnu   libc6-dev-riscv64-cross \
+        gcc-powerpc-linux-gnu   libc6-dev-powerpc-cross \
+        gcc-powerpc64-linux-gnu libc6-dev-ppc64-cross \
         gcc-arm-none-eabi; do \
       apt-get install -y --no-install-recommends "$pkg" \
         || echo "$pkg unavailable on this host arch (non-fatal)"; \
