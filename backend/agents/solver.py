@@ -15,7 +15,7 @@ from pydantic_ai.toolsets.abstract import ToolsetTool
 from pydantic_ai.toolsets.wrapper import WrapperToolset
 
 from backend.cost_tracker import CostTracker
-from backend.ctfd import CTFdClient
+from backend.backends import Backend
 from backend.deps import SolverDeps
 from backend.loop_detect import LOOP_WARNING_MESSAGE, LoopDetector
 from backend.models import (
@@ -112,7 +112,7 @@ class Solver:
         model_spec: str,
         challenge_dir: str,
         meta: ChallengeMeta,
-        ctfd: CTFdClient,
+        ctfd: Backend,
         cost_tracker: CostTracker,
         settings: object,
         cancel_event: asyncio.Event | None = None,

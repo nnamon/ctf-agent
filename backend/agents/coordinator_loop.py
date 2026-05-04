@@ -11,7 +11,7 @@ from typing import Any
 
 from backend.config import Settings
 from backend.cost_tracker import CostTracker
-from backend.ctfd import CTFdClient
+from backend.backends import Backend, make_backend
 from backend.deps import CoordinatorDeps
 from backend.models import DEFAULT_MODELS
 from backend.poller import CTFdPoller
@@ -32,9 +32,9 @@ def build_deps(
     challenge_metas: dict[str, ChallengeMeta] | None = None,
     no_writeup: bool = False,
     writeup_model: str = "claude-opus-4-6",
-) -> tuple[CTFdClient, CostTracker, CoordinatorDeps]:
-    """Create CTFd client, cost tracker, and coordinator deps."""
-    ctfd = CTFdClient(
+) -> tuple[Backend, CostTracker, CoordinatorDeps]:
+    """Create the backend, cost tracker, and coordinator deps."""
+    ctfd = make_backend(
         base_url=settings.ctfd_url,
         token=settings.ctfd_token,
         username=settings.ctfd_user,
@@ -72,7 +72,7 @@ def build_deps(
 
 async def run_event_loop(
     deps: CoordinatorDeps,
-    ctfd: CTFdClient,
+    ctfd: Backend,
     cost_tracker: CostTracker,
     turn_fn: TurnFn,
     status_interval: int = 60,

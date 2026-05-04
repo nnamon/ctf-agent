@@ -101,7 +101,7 @@ async def _run_single(
 
     from backend.agents.swarm import ChallengeSwarm
     from backend.cost_tracker import CostTracker
-    from backend.ctfd import CTFdClient
+    from backend.backends import make_backend
     from backend.prompts import ChallengeMeta
     from backend.sandbox import cleanup_orphan_containers, configure_semaphore
 
@@ -118,7 +118,7 @@ async def _run_single(
     meta = ChallengeMeta.from_yaml(meta_path)
     console.print(f"[bold]Challenge:[/bold] {meta.name} ({meta.category}, {meta.value} pts)")
 
-    ctfd = CTFdClient(
+    ctfd = make_backend(
         base_url=settings.ctfd_url,
         token=settings.ctfd_token,
         username=settings.ctfd_user,

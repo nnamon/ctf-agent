@@ -4,7 +4,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 
-from backend.ctfd import CTFdClient
+from backend.backends import Backend
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ class PollEvent:
 class CTFdPoller:
     """Polls CTFd every interval_s seconds, emits events for new/solved challenges."""
 
-    ctfd: CTFdClient
+    ctfd: Backend
     interval_s: float = 5.0
 
     _known_challenges: set[str] = field(default_factory=set)
