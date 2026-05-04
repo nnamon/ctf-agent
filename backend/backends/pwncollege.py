@@ -63,10 +63,12 @@ class PwnCollegeBackend(CTFdSessionBackend):
 
     # Cached metadata for resolved challenges, keyed by `<dojo>/<mod>/<chal>`.
     _challenge_meta: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
-    # CTFd int challenge_id cache keyed by (dojo, module). The dojo plugin
-    # uses one int per module across all its slug-challenges, so this saves
-    # us an HTTP round trip after the first resolve in the module.
-    _module_int_ids: dict[tuple[str, str], int] = field(default_factory=dict, repr=False)
+    # Per-module slug→int map populated lazily by get_challenge_id (one
+    # HTTP fetch returns the full accordion, so we cache every slug we
+    # see at once). Keyed by (dojo, module).
+    _module_slug_ints: dict[tuple[str, str], dict[str, int]] = field(
+        default_factory=dict, repr=False
+    )
 
     # ---------- CSRF override ----------
 
@@ -163,102 +165,157 @@ class PwnCollegeBackend(CTFdSessionBackend):
         return await self.fetch_challenge_stubs()
 
     async def fetch_solved_names(self) -> set[str]:
-        """Aggregate per-dojo solves into a flat name set.
+        """Map the user's CTFd solves back to dojo/module/slug names.
 
-        The standard CTFd `/users/<id>/solves` endpoint also works on
-        pwn.college, but it returns *underlying CTFd Challenge.name* values
-        which collide across dojos (e.g. the same "embryoio_level1" name
-        appears in multiple dojos). Per-dojo solves are unambiguous.
+        We use the standard CTFd `/api/v1/users/<id>/solves` endpoint
+        which DOES populate on pwn.college. The dojo plugin's
+        `/pwncollege_api/v1/dojos/<id>/solves?username=...` consistently
+        returns empty for non-public solves on this account, so it's not
+        reliable as the source of truth.
+
+        CTFd's challenge.name is `<module>:<slug>`. We cross-reference by
+        the unique int challenge id against our per-module slug→int map
+        (populated eagerly here for every configured dojo) so a solve
+        with name "welcome:ssh" maps to "welcome/welcome/ssh".
         """
         await self._ensure_logged_in()
         client = await self._ensure_client()
 
-        # Discover the current user's username for the dojo-solves endpoint.
         try:
             me = await client.get("/api/v1/users/me", headers=self._base_headers())
             me.raise_for_status()
-            username = me.json().get("data", {}).get("name")
+            user_id = me.json().get("data", {}).get("id")
         except Exception as e:
             logger.warning("Could not read /api/v1/users/me: %s", e)
             return set()
-        if not username:
+        if not user_id:
             return set()
 
-        solved: set[str] = set()
+        try:
+            resp = await client.get(
+                f"/api/v1/users/{user_id}/solves",
+                headers=self._base_headers(),
+            )
+            resp.raise_for_status()
+            ctfd_solves = resp.json().get("data", [])
+        except Exception as e:
+            logger.warning("Could not fetch user solves: %s", e)
+            return set()
+
+        # Build int→full_name reverse lookup from cached slug→int maps.
+        # Eagerly populate any missing module by fetching its page.
+        int_to_name: dict[int, str] = {}
         for dojo_id in (self.dojos or []):
-            try:
-                resp = await client.get(
-                    f"/pwncollege_api/v1/dojos/{dojo_id}/solves",
-                    params={"username": username},
-                )
-                resp.raise_for_status()
-                for s in resp.json().get("solves", []):
-                    solved.add(f"{dojo_id}/{s['module_id']}/{s['challenge_id']}")
-            except Exception as e:
-                logger.warning("Could not fetch solves for dojo %r: %s", dojo_id, e)
+            modules_seen = await self._known_modules_for_dojo(dojo_id)
+            for mod_id in modules_seen:
+                key = (dojo_id, mod_id)
+                if key not in self._module_slug_ints:
+                    await self._load_module_slug_map(dojo_id, mod_id)
+                for slug, cid in self._module_slug_ints.get(key, {}).items():
+                    int_to_name[cid] = f"{dojo_id}/{mod_id}/{slug}"
+
+        solved: set[str] = set()
+        for s in ctfd_solves:
+            cid = s.get("challenge_id") or s.get("challenge", {}).get("id")
+            if cid in int_to_name:
+                solved.add(int_to_name[cid])
         return solved
+
+    async def _known_modules_for_dojo(self, dojo_id: str) -> list[str]:
+        """Return module ids for `dojo_id`, hitting the API only if cold."""
+        cached = [
+            mod for d, mod in self._module_slug_ints if d == dojo_id
+        ]
+        if cached:
+            return cached
+        # Cold: walk the modules listing and remember the ids.
+        client = await self._ensure_client()
+        try:
+            resp = await client.get(
+                f"/pwncollege_api/v1/dojos/{dojo_id}/modules"
+            )
+            resp.raise_for_status()
+            return [m["id"] for m in resp.json().get("modules", [])]
+        except Exception as e:
+            logger.warning("Could not list modules for %r: %s", dojo_id, e)
+            return []
+
+    async def _load_module_slug_map(self, dojo_id: str, module_id: str) -> None:
+        """Fetch one challenge page in the module to populate the slug→int map.
+
+        The rendered page contains the full accordion of all challenges in
+        the module, so a single GET maps every slug at once. Picks an
+        arbitrary slug from the module's challenge list to navigate to —
+        the URL serves the same accordion regardless.
+        """
+        client = await self._ensure_client()
+        # Find any slug we know exists in this module.
+        candidate_name = next(
+            (
+                n for n, m in self._challenge_meta.items()
+                if m["dojo"] == dojo_id and m["module"] == module_id
+            ),
+            None,
+        )
+        if candidate_name is None:
+            return
+        slug = self._challenge_meta[candidate_name]["challenge"]
+        page_url = f"/{dojo_id}/{module_id}/{slug}/"
+        resp = await client.get(page_url, headers=self._base_headers())
+        if resp.status_code != 200:
+            return
+        pairs = re.findall(
+            r'id=["\']challenge["\'][^>]*value=["\']([a-z0-9_-]+)["\'][\s\S]{0,400}?'
+            r'id=["\']challenge-id["\'][^>]*value=["\'](\d+)["\']',
+            resp.text,
+        )
+        if pairs:
+            self._module_slug_ints[(dojo_id, module_id)] = {
+                slug: int(cid) for slug, cid in pairs
+            }
+            for slug, cid in pairs:
+                self._challenge_ids[f"{dojo_id}/{module_id}/{slug}"] = int(cid)
 
     # ---------- submission ----------
 
     async def get_challenge_id(self, name: str) -> int:
         """Resolve `<dojo>/<module>/<challenge>` to the CTFd int challenge_id.
 
-        The dojo plugin uses one underlying CTFd Challenge per *module*, so
-        the int is a per-module constant — the dojo plugin disambiguates
-        which `<challenge_slug>` a flag belongs to via the user's currently-
-        active workspace. The int is embedded in the rendered page template
-        as `<input id="challenge-id" type="hidden" value="...">`, but the
-        page always reflects whichever challenge the user's workspace is
-        on, so we have to make sure the workspace matches BEFORE reading
-        the page.
+        The dojo plugin assigns a unique integer Challenge.id per
+        (dojo, module, slug) tuple. The rendered module page contains an
+        accordion with one section per challenge, each with paired hidden
+        inputs `<input id="challenge" value="<slug>">` and
+        `<input id="challenge-id" value="<int>">`. We parse the whole map
+        in one shot and cache it per-module.
 
-        We treat the int as a per-module cache: once we've resolved it for
-        any (dojo, module, *) we reuse it across all challenges in that
-        module — saves an extra workspace re-spawn on subsequent calls.
+        Flag verification on submit also requires the *active workspace*
+        to be on this exact slug — not just the matching module. So we
+        spawn the workspace before submission if needed; the heavy /api/
+        v1/docker POST tears down whatever is running, so we skip it when
+        the slug already matches.
         """
         if name in self._challenge_ids:
-            return self._challenge_ids[name]
+            chid = self._challenge_ids[name]
+            await self._ensure_active_workspace_for(name)
+            return chid
 
         meta = self._challenge_meta.get(name)
         if meta is None:
-            # Cold cache — repopulate via listing.
             await self.fetch_challenge_stubs()
             meta = self._challenge_meta.get(name)
         if meta is None:
             raise RuntimeError(f"Challenge {name!r} not found in any configured dojo")
 
-        # Per-module cache lookup
-        module_key = (meta["dojo"], meta["module"])
-        if module_key in self._module_int_ids:
-            chid = self._module_int_ids[module_key]
-            self._challenge_ids[name] = chid
-            return chid
+        # Make sure the workspace is on the EXACT slug we're resolving
+        # for. Required for flag-attempt verification on the server side.
+        await self._ensure_active_workspace_for(name)
 
-        # Make sure the workspace is on a challenge in this dojo+module
-        # before we trust the page's challenge-id. We avoid POSTing if we
-        # can — every /pwncollege_api/v1/docker POST tears down whatever
-        # the workspace is currently running, which is expensive and
-        # disruptive if it's mid-solve.
-        current = await self.current_workspace_challenge()
-        same_module = (
-            current
-            and current["dojo"] == meta["dojo"]
-            and current["module"] == meta["module"]
-        )
-        if not same_module:
-            logger.info(
-                "get_challenge_id: spawning workspace for %s/%s/%s (was %s)",
-                meta["dojo"], meta["module"], meta["challenge"], current,
-            )
-            await self.start_workspace(
-                meta["dojo"], meta["module"], meta["challenge"]
-            )
-
+        # Parse the slug→int map for this module from the rendered page
+        # (one HTTP call gives us every challenge in the module). The page
+        # always contains the full accordion, regardless of which slug we
+        # GET — so we use the active-challenge URL.
         await self._ensure_logged_in()
         client = await self._ensure_client()
-        # The dojo blueprint registers the challenge view at the bare
-        # /<dojo>/<module>/<challenge>/ path (without a /dojo/ prefix).
-        # /dojo/<id>/* is reserved for admin/join/etc, NOT the listing.
         page_url = f"/{meta['dojo']}/{meta['module']}/{meta['challenge']}/"
         resp = await client.get(page_url, headers=self._base_headers())
         if resp.status_code != 200:
@@ -266,34 +323,61 @@ class PwnCollegeBackend(CTFdSessionBackend):
                 f"Could not load challenge page {page_url}: HTTP {resp.status_code}"
             )
 
-        # The dojo theme renders the int challenge_id as a hidden input:
-        #   <input id="challenge-id" type="hidden" value="18402">
-        # alongside the slug ones (id="module" / id="challenge"). Pluck
-        # the int; submission goes through standard CTFd /attempt with it.
-        m = re.search(
-            r'id=["\']challenge-id["\']\s+type=["\']hidden["\']\s+value=["\'](\d+)["\']',
+        # Pair up `id="challenge" value="<slug>"` with the immediately-
+        # following `id="challenge-id" value="<int>"` — they live in the
+        # same accordion section, in that order. Use re.findall on the
+        # combined pattern so we never mismatch across sections.
+        pairs = re.findall(
+            r'id=["\']challenge["\'][^>]*value=["\']([a-z0-9_-]+)["\'][\s\S]{0,400}?'
+            r'id=["\']challenge-id["\'][^>]*value=["\'](\d+)["\']',
             resp.text,
         )
-        if not m:
-            # Looser fallback in case attribute order changes:
-            m = re.search(
-                r'<input[^>]*id=["\']challenge-id["\'][^>]*value=["\'](\d+)["\']',
-                resp.text,
-            )
-        if not m:
-            # Last-resort fallback for older theme variants that exposed it
-            # as a JSON value in template context.
-            m = re.search(r'["\']challenge_id["\']\s*:\s*(\d+)', resp.text)
-        if not m:
+        if not pairs:
             raise RuntimeError(
-                f"Could not find numeric challenge_id on {page_url}. "
+                f"Could not parse slug→id map on {page_url}. "
                 "The dojo theme may have changed; please report."
             )
+        slug_to_int: dict[str, int] = {slug: int(cid) for slug, cid in pairs}
 
-        chid = int(m.group(1))
-        self._challenge_ids[name] = chid
-        self._module_int_ids[(meta["dojo"], meta["module"])] = chid
-        return chid
+        # Cache every slug we found. Saves an HTTP round-trip on every
+        # subsequent get_challenge_id within the same module.
+        for slug, cid in slug_to_int.items():
+            full_name = f"{meta['dojo']}/{meta['module']}/{slug}"
+            self._challenge_ids[full_name] = cid
+        self._module_slug_ints[(meta["dojo"], meta["module"])] = slug_to_int
+
+        if meta["challenge"] not in slug_to_int:
+            raise RuntimeError(
+                f"Challenge slug {meta['challenge']!r} not in parsed map "
+                f"({sorted(slug_to_int)}). Stale cache?"
+            )
+        return slug_to_int[meta["challenge"]]
+
+    async def _ensure_active_workspace_for(self, name: str) -> None:
+        """Spawn the user's workspace for `name` if it isn't already active.
+
+        Skips the POST when the slug already matches — pwn.college tears
+        down whatever's running on every /pwncollege_api/v1/docker POST,
+        so being chatty here is genuinely disruptive (interrupts the
+        solver mid-bash).
+        """
+        meta = self._challenge_meta.get(name)
+        if meta is None:
+            return
+        current = await self.current_workspace_challenge()
+        if current and (
+            current["dojo"] == meta["dojo"]
+            and current["module"] == meta["module"]
+            and current["challenge"] == meta["challenge"]
+        ):
+            return
+        logger.info(
+            "spawning workspace for %s/%s/%s (was %s)",
+            meta["dojo"], meta["module"], meta["challenge"], current,
+        )
+        await self.start_workspace(
+            meta["dojo"], meta["module"], meta["challenge"]
+        )
 
     async def submit_flag(self, challenge_name: str, flag: str) -> SubmitResult:
         """Standard CTFd submission with our resolved int ID."""
