@@ -917,13 +917,34 @@ function renderDetail(challenges) {
     </div>`;
 
   if (!c.solvers.length) {
-    html += `<div class="empty-detail">
-      <span class="icon">▶</span>
-      No swarm spawned for this challenge yet.
-    </div>
-    <div class="detail-footer">
-      <button class="filled" onclick="spawnNamed('${cNameEnc}')">Spawn swarm</button>
-    </div>`;
+    // Three sub-states for the no-current-swarm case:
+    //   1. "queued" + ctfd_solved: solved in some prior run; writeup
+    //      exists on disk but the live swarm has been GC'd. Surface the
+    //      Writeup button instead of just Spawn.
+    //   2. "queued" only: never attempted. Spawn-only footer.
+    //   3. "done" / "killed": rare here (would mean the swarm finished
+    //      and got cleaned up before we sampled state). Same treatment as
+    //      (1) since a writeup is likely.
+    const wasSolved = c.ctfd_solved || c.status === 'done' || c.status === 'killed';
+    if (wasSolved) {
+      html += `<div class="empty-detail">
+        <span class="icon">✓</span>
+        Solved in a prior run — live solver state isn't loaded for this
+        run, but the writeup is available below.
+      </div>
+      <div class="detail-footer">
+        <button class="outlined" onclick="toggleWriteup('${cNameEnc}')">Writeup</button>
+        <button class="filled" onclick="spawnNamed('${cNameEnc}')">Re-spawn</button>
+      </div>`;
+    } else {
+      html += `<div class="empty-detail">
+        <span class="icon">▶</span>
+        No swarm spawned for this challenge yet.
+      </div>
+      <div class="detail-footer">
+        <button class="filled" onclick="spawnNamed('${cNameEnc}')">Spawn swarm</button>
+      </div>`;
+    }
   } else {
     html += `<table class="solvers"><thead><tr>
       <th>Model</th><th>Step</th><th class="right">Cost</th>
