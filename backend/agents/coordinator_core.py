@@ -211,5 +211,30 @@ async def _generate_writeup_for_swarm(swarm, winner_result, deps: CoordinatorDep
         )
         if out:
             logger.info("Post-mortem writeup written: %s", out)
+            # Attach to the AttemptLog row so an orchestrator can locate
+            # the writeup for chain-sibling --context attachments without
+            # fs-walking writeups/.
+            if hasattr(deps.ctfd, "set_writeup_path") and winner_result.flag:
+                try:
+                    deps.ctfd.set_writeup_path(
+                        swarm.meta.name, winner_result.flag, str(out)
+                    )
+                except Exception:
+                    pass
+
+        # Persist the preserved-workspace path (when --preserve-workspace is on)
+        # for the same orchestrator-discoverability reason.
+        preserve_root = getattr(deps.settings, "preserve_workspace_to", "") or ""
+        if preserve_root and hasattr(deps.ctfd, "set_workspace_path") \
+                and winner_result.flag and winner_spec:
+            try:
+                slug = Path(swarm.challenge_dir).name or "challenge"
+                wpath = Path(preserve_root) / slug / winner_spec / "workspace"
+                if wpath.exists():
+                    deps.ctfd.set_workspace_path(
+                        swarm.meta.name, winner_result.flag, str(wpath)
+                    )
+            except Exception:
+                pass
     except Exception as e:
         logger.warning("Post-mortem failed for %s: %s", swarm.meta.name, e, exc_info=True)

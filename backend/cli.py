@@ -201,12 +201,43 @@ async def _run_single(
         console.print(f"  [bold]Total: ${cost_tracker.total_cost_usd:.2f}[/bold]")
 
         if not no_writeup and result and result.status == FLAG_FOUND:
-            await _generate_writeup(swarm, result, cost_tracker, duration_s, writeup_model)
+            await _generate_writeup(
+                swarm, result, cost_tracker, duration_s, writeup_model, ctfd
+            )
+        # Persist the preserved-workspace path so an orchestrator can find
+        # the artifacts via the AttemptLog SQL query.
+        if (
+            getattr(settings, "preserve_workspace_to", "")
+            and result and result.status == FLAG_FOUND
+            and result.flag
+        ):
+            _record_workspace_path(ctfd, swarm, result, settings)
     finally:
         await ctfd.close()
 
 
-async def _generate_writeup(swarm, winner_result, cost_tracker, duration_s, model: str) -> None:
+def _record_workspace_path(ctfd, swarm, winner_result, settings) -> None:
+    """If --preserve-workspace was on, attach the winner's preserved
+    workspace path to the AttemptLog row for later orchestrator use."""
+    if not hasattr(ctfd, "set_workspace_path"):
+        return
+    try:
+        winner_spec = swarm.winner_spec or ""
+        if not winner_spec:
+            return
+        # Mirror the path layout from DockerSandbox.from_settings:
+        #   <preserve_root>/<challenge_slug>/<model_spec>/workspace
+        from pathlib import Path
+        slug = Path(swarm.challenge_dir).name or "challenge"
+        path = Path(settings.preserve_workspace_to) / slug / winner_spec / "workspace"
+        if path.exists():
+            ctfd.set_workspace_path(swarm.meta.name, winner_result.flag, str(path))
+    except Exception:
+        # Persistence is best-effort — never let a logging failure break a solve.
+        pass
+
+
+async def _generate_writeup(swarm, winner_result, cost_tracker, duration_s, model: str, ctfd=None) -> None:
     """Generate a post-mortem writeup for a finished swarm."""
     from pathlib import Path
 
@@ -234,6 +265,14 @@ async def _generate_writeup(swarm, winner_result, cost_tracker, duration_s, mode
     )
     if out:
         console.print(f"[green]Writeup:[/green] {out}")
+        # Attach to the AttemptLog row so an orchestrator can locate the
+        # writeup for chain-sibling --context attachments without
+        # fs-walking writeups/.
+        if ctfd is not None and hasattr(ctfd, "set_writeup_path") and winner_result.flag:
+            try:
+                ctfd.set_writeup_path(swarm.meta.name, winner_result.flag, str(out))
+            except Exception:
+                pass
     else:
         console.print("[yellow]Writeup generation skipped or failed (see logs).[/yellow]")
 
