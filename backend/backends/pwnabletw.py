@@ -18,14 +18,17 @@ distfile links embedded), solve count. Logged-in renders the same set
 plus per-challenge solve markers.
 
 Flag submission: `POST /challenge/submit_flag` with form fields
-`{flag, id}` returns a JSON-encoded string body (literal quotes
-included, e.g. `"correct"`). Response values observed:
-  - `"correct"`    — flag accepted
+`{flag, id}` returns a JSON-encoded body. Response values observed
+(verified against the dojo theme's challenge.js handler):
+  - `"<int>"`      — CORRECT. The integer is the challenge id; the JS
+                     uses it to mark `#flag-id-<int>` as solved.
   - `"wrong"`      — flag rejected
   - `"duplicated"` — already submitted by this user
   - `"error"`      — server-side transport error
-The challenge.js client treats both `"error"` and unrecognised values
-as failures; we mirror that.
+The JS treats *any non-empty value other than 'error'/'wrong'/
+'duplicated'* as success — i.e. any int (or future string) means the
+flag landed. We mirror that: known-bad strings → incorrect/etc.,
+anything else truthy → correct.
 
 Solver flow:
   - Local Docker sandbox runs the agent (no remote workspace).
@@ -301,18 +304,16 @@ class PwnableTwBackend(Backend):
                 f"submit_flag transport error: HTTP {resp.status_code}",
             )
 
-        # The endpoint returns a JSON-encoded string ('"correct"',
-        # '"wrong"', etc.). Strip enclosing quotes if present so the
-        # match below is straightforward.
+        # The endpoint returns a JSON-encoded body. The frontend's
+        # response logic (dojo_theme/static/js/challenge.js) checks
+        # against three known-bad strings; anything else truthy is
+        # treated as success and the value happens to be the challenge
+        # id (used to mark `#flag-id-<id>` as solved client-side).
         raw = (resp.text or "").strip()
         body = raw.lower()
         if body.startswith('"') and body.endswith('"'):
             body = body[1:-1]
-        if body == "correct":
-            return SubmitResult(
-                "correct", "correct",
-                f'CORRECT — "{flag}" accepted on pwnable.tw',
-            )
+
         if body == "duplicated":
             return SubmitResult(
                 "already_solved", "duplicated",
@@ -329,10 +330,18 @@ class PwnableTwBackend(Backend):
                 "unknown", "error",
                 'pwnable.tw returned "error" — transient transport failure, retry',
             )
-        # Anything else: don't lie about success/failure.
+        if body:
+            # Truthy non-error → success. Body is typically the int
+            # challenge id (e.g. '"2"' for orw); occasionally pwnable.tw
+            # may return literal "correct" — handle both.
+            return SubmitResult(
+                "correct", body or "correct",
+                f'CORRECT — "{flag}" accepted on pwnable.tw',
+            )
+        # Empty body — treat as transport failure, not silently success.
         return SubmitResult(
-            "unknown", raw[:120],
-            f"Unknown pwnable.tw response: {raw[:120]!r}",
+            "unknown", "",
+            "pwnable.tw returned empty body — assume transport failure",
         )
 
     # ---------- pull ----------
