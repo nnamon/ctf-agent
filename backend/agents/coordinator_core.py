@@ -56,6 +56,27 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
     if challenge_name in deps.swarms:
         return f"Swarm still running for {challenge_name}"
 
+    # Per-session quota check. Block new spawns when persisted + in-process
+    # cost would already be over budget. Active swarms continue to run —
+    # we don't kill mid-attempt, just refuse to start more.
+    quota = getattr(deps.settings, "quota_usd", None)
+    if quota is not None:
+        usage_db = getattr(deps.settings, "usage_log_path", None)
+        session = getattr(deps.settings, "session_name", "default")
+        persisted = 0.0
+        if usage_db:
+            from backend.usage_log import session_total_usd
+            from pathlib import Path as _P
+            persisted = session_total_usd(_P(usage_db), session)
+        spent = persisted + deps.cost_tracker.total_cost_usd
+        if spent >= quota:
+            return (
+                f"Session quota exceeded: spent ${spent:.2f} of "
+                f"${quota:.2f}. Refusing to spawn new swarm. "
+                f"Raise quota_usd in sessions/{session}/session.yml or "
+                f"start a new session to continue."
+            )
+
     # Auto-pull challenge if needed
     if challenge_name not in deps.challenge_dirs:
         challenges = await deps.ctfd.fetch_all_challenges()
@@ -200,6 +221,13 @@ async def _generate_writeup_for_swarm(swarm, winner_result, deps: CoordinatorDep
             if path:
                 sibling_traces.append((spec, path))
 
+        # Session-scoped writeup output dir; falls back to the legacy
+        # "writeups/" if no session is active.
+        from backend.session import SessionContext
+        session_for_writeup = SessionContext.resolve(
+            explicit=getattr(deps.settings, "session_name", None)
+        )
+
         out = await generate_writeup(
             meta=swarm.meta,
             winner_result=winner_result,
@@ -207,6 +235,7 @@ async def _generate_writeup_for_swarm(swarm, winner_result, deps: CoordinatorDep
             sibling_traces=sibling_traces,
             cost_usd=deps.cost_tracker.total_cost_usd,
             duration_s=duration_s,
+            out_dir=session_for_writeup.writeups_dir,
             model=deps.writeup_model,
         )
         if out:

@@ -48,8 +48,14 @@ def _setup_logging(verbose: bool = False) -> None:
 @click.option("--msg-port", default=0, type=int, help="Operator message port (0 = auto)")
 @click.option("--no-writeup", is_flag=True, help="Skip the post-mortem writeup after each solve")
 @click.option("--writeup-model", default="claude-opus-4-6", help="Model used to generate the post-mortem writeup")
-@click.option("--attempt-log-path", default="logs/attempts.db",
-              help="SQLite file persisting flag attempts; used to short-circuit duplicate-rejected flags and inject 'already-rejected' history into prompts.")
+@click.option("--session", "session_name", default=None,
+              help="Active session name. Resolves to sessions/<NAME>/ for "
+                   "challenges, writeups, logs, runs. Falls back to "
+                   "$CTF_SESSION, then .ctf-session dotfile, then 'default'. "
+                   "Use ctf-session create/use to manage sessions.")
+@click.option("--attempt-log-path", default=None,
+              help="SQLite file persisting flag attempts. Default: "
+                   "sessions/<NAME>/logs/attempts.db (auto-derived from session).")
 @click.option("--no-attempt-log", is_flag=True,
               help="Disable persistent attempt logging (default: enabled).")
 @click.option("--confirm-flags", "confirm_flags", is_flag=True,
@@ -87,7 +93,8 @@ def main(
     msg_port: int,
     no_writeup: bool,
     writeup_model: str,
-    attempt_log_path: str,
+    session_name: str | None,
+    attempt_log_path: str | None,
     no_attempt_log: bool,
     confirm_flags: bool,
     context_files: tuple[str, ...],
@@ -101,6 +108,15 @@ def main(
     _setup_logging(verbose)
 
     settings = Settings(sandbox_image=image)
+
+    # Resolve the active session and reroot all path-bearing settings
+    # underneath sessions/<NAME>/. CLI flags retain the final word —
+    # an explicit --attempt-log-path overrides the session-derived default.
+    from backend.session import SessionContext
+    session = SessionContext.resolve(explicit=session_name)
+    session.ensure_dirs()
+    settings.session_name = session.name
+
     if ctfd_url:
         settings.ctfd_url = ctfd_url
     if ctfd_token:
@@ -109,23 +125,50 @@ def main(
         settings.ctfd_session_cookie = ctfd_session
     if ctfd_csrf:
         settings.ctfd_csrf_token = ctfd_csrf
+
+    # session.yml overlay — fills in any field that wasn't set by CLI/env.
+    # Read order: CLI flag > env var > session.yml > class default.
+    overlay = session.config or {}
+    if not ctfd_url and overlay.get("ctfd_url"):
+        settings.ctfd_url = overlay["ctfd_url"]
+    if not ctfd_token and overlay.get("ctfd_token"):
+        settings.ctfd_token = overlay["ctfd_token"]
+    if not ctfd_session and overlay.get("ctfd_session_cookie"):
+        settings.ctfd_session_cookie = overlay["ctfd_session_cookie"]
+
     settings.max_concurrent_challenges = max_challenges
-    settings.attempt_log_path = None if no_attempt_log else attempt_log_path
+    if no_attempt_log:
+        settings.attempt_log_path = None
+    elif attempt_log_path:
+        settings.attempt_log_path = attempt_log_path
+    else:
+        settings.attempt_log_path = str(session.attempt_log_path)
+    # Usage-log path is always session-scoped; no CLI override (yet).
+    settings.usage_log_path = str(session.usage_log_path)
+    # Quota: sourced from session.yml — None means no cap.
+    settings.quota_usd = session.quota_usd
     settings.manual_confirm = confirm_flags
 
     # Orchestration: --context FILE (repeatable) and --preserve-workspace.
-    # The preserve path is rooted at runs/<RUN_ID>/<challenge_slug>/, derived
-    # in _run_single once we know the slug. Here we just record the run-root.
+    # Workspace preserve root lives inside the session dir so artifacts
+    # stay scoped to the engagement.
     settings.context_files = list(context_files)
     if preserve_workspace:
         from backend.sandbox import RUN_ID
-        # Slug filled in per-challenge inside _run_single.
-        settings.preserve_workspace_to = f"runs/{RUN_ID}"
+        # Slug filled in per-challenge inside DockerSandbox.from_settings.
+        settings.preserve_workspace_to = str(session.runs_dir / RUN_ID)
+
+    # If --challenges-dir wasn't overridden (still the default 'challenges'),
+    # use the session's challenges dir instead.
+    if challenges_dir == "challenges":
+        challenges_dir = str(session.challenges_dir)
 
     model_specs = list(models) if models else list(DEFAULT_MODELS)
 
     from backend.sandbox import RUN_ID
     console.print("[bold]CTF Agent v2[/bold]")
+    console.print(f"  Session: [magenta]{session.name}[/magenta]   "
+                  f"[dim]({session.root})[/dim]")
     console.print(f"  Run ID: [cyan]{RUN_ID}[/cyan]   "
                   f"[dim](docker ps --filter label=ctf-agent.run={RUN_ID})[/dim]")
     console.print(f"  CTFd: {settings.ctfd_url}")
@@ -221,6 +264,13 @@ async def _run_single(
             and result.flag
         ):
             _record_workspace_path(ctfd, swarm, result, settings)
+        # Persist token usage to the session's usage.db.
+        from backend.sandbox import RUN_ID
+        cost_tracker.flush_to_log(
+            db_path=getattr(settings, "usage_log_path", None),
+            run_id=RUN_ID,
+            session_name=getattr(settings, "session_name", "default"),
+        )
     finally:
         await ctfd.close()
 
@@ -262,6 +312,13 @@ async def _generate_writeup(swarm, winner_result, cost_tracker, duration_s, mode
         if path:
             sibling_traces.append((spec, path))
 
+    # Pick a session-scoped output dir if available; this mirrors the
+    # session resolution done in main(). The default arg in
+    # generate_writeup is the legacy top-level "writeups/".
+    from backend.session import SessionContext
+    session_for_writeup = SessionContext.resolve()
+    out_dir = session_for_writeup.writeups_dir
+
     console.print("\n[dim]Generating post-mortem writeup...[/dim]")
     out = await generate_writeup(
         meta=swarm.meta,
@@ -270,6 +327,7 @@ async def _generate_writeup(swarm, winner_result, cost_tracker, duration_s, mode
         sibling_traces=sibling_traces,
         cost_usd=cost_tracker.total_cost_usd,
         duration_s=duration_s,
+        out_dir=out_dir,
         model=model,
     )
     if out:

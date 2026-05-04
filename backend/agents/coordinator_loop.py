@@ -206,6 +206,17 @@ async def run_event_loop(
         if deps.swarm_tasks:
             await asyncio.gather(*deps.swarm_tasks.values(), return_exceptions=True)
         cost_tracker.log_summary()
+        # Persist this run's per-agent usage to the session usage.db so
+        # ctf-tokens reports / quota checks see it.
+        try:
+            from backend.sandbox import RUN_ID
+            cost_tracker.flush_to_log(
+                db_path=getattr(deps.settings, "usage_log_path", None),
+                run_id=RUN_ID,
+                session_name=getattr(deps.settings, "session_name", "default"),
+            )
+        except Exception as e:
+            logger.warning("usage_log flush failed: %s", e)
         try:
             await ctfd.close()
         except Exception:

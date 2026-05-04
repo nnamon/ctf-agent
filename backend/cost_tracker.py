@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -235,3 +236,40 @@ class CostTracker:
             _fmt_tokens(self.total_tokens),
             overall_hit,
         )
+
+    def flush_to_log(
+        self,
+        db_path: str | None,
+        run_id: str,
+        session_name: str,
+    ) -> None:
+        """Persist one row per agent into the session usage log.
+
+        Called at end-of-run from the CLI / coordinator. No-op when db_path
+        is empty (operator opted out of usage logging) or no agents have
+        recorded anything yet. Errors are swallowed inside usage_log
+        helpers — accounting must not break a successful solve.
+        """
+        if not db_path or not self.by_agent:
+            return
+        from pathlib import Path
+        from backend.usage_log import UsageRow, insert_row
+        ts = int(time.time())
+        for agent_name, agent in self.by_agent.items():
+            # Best-effort split: 'challenge/model' is the usual format.
+            chall = agent_name.split("/", 1)[0] if "/" in agent_name else None
+            row = UsageRow(
+                run_id=run_id,
+                session_name=session_name,
+                agent_name=agent_name,
+                challenge_name=chall,
+                model_name=agent.model_name,
+                provider_spec=agent.provider_spec or None,
+                input_tokens=agent.usage.input_tokens,
+                output_tokens=agent.usage.output_tokens,
+                cache_read_tokens=agent.usage.cache_read_tokens,
+                cost_usd=agent.cost_usd,
+                duration_seconds=agent.duration_seconds,
+                ts=ts,
+            )
+            insert_row(Path(db_path), row)
