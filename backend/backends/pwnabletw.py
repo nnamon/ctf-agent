@@ -241,19 +241,54 @@ class PwnableTwBackend(Backend):
         return await self.fetch_challenge_stubs()
 
     async def fetch_solved_names(self) -> set[str]:
-        """Best-effort solved-set lookup.
+        """Read the `/user/` profile's "Solved Challenges" table.
 
-        pwnable.tw's listing HTML doesn't expose per-user solve markers
-        in a stable way (every flag-id renders the same `glyphicon-ok`
-        regardless of solve state on this account, possibly because
-        agent_amon has 0 solves). The dependable signal is our own
-        AttemptLogBackend which records every CORRECT submission we
-        make — that decorator wraps this backend and short-circuits
-        repeat submissions, so missing the server-side solve-set here
-        only costs us at coordinator boot when we don't yet know what
-        we've already solved on this account.
+        The /challenge/ listing's per-flag markers are identical for
+        solved and unsolved (every entry renders `glyphicon-ok`), so
+        that page is useless as a solve oracle. The user's profile,
+        however, has a table:
+
+          <h4>Solved Challenges</h4>
+          <table>
+            <tr><td>1</td><td><a href="/challenge/#2">orw</a></td>...
+            <tr><td>2</td><td><a href="/challenge/#1">Start</a></td>...
+            ...
+
+        We pull `/challenge/#<int>` ids from each row and map each to
+        a slug via the cached fetch_challenge_stubs map (which keys by
+        slug → _pwntw.id). Re-fetches the stubs on cold cache so a
+        fresh backend boot Just Works.
         """
-        return set()
+        await self._ensure_logged_in()
+        client = await self._ensure_client()
+
+        try:
+            resp = await client.get("/user/", follow_redirects=True)
+            resp.raise_for_status()
+        except Exception as e:
+            logger.warning("Could not fetch /user/ profile: %s", e)
+            return set()
+
+        # Snip out the "Solved Challenges" section and pull the int IDs.
+        idx = resp.text.find("Solved Challenges")
+        if idx < 0:
+            return set()
+        section = resp.text[idx:]
+        ids = {
+            int(m.group(1))
+            for m in re.finditer(r'href="/challenge/#(\d+)"', section)
+        }
+        if not ids:
+            return set()
+
+        # Map int id → slug. Populate stubs cache if cold.
+        if not self._stubs_by_name:
+            await self.fetch_challenge_stubs()
+        id_to_name = {
+            stub["_pwntw"]["id"]: name
+            for name, stub in self._stubs_by_name.items()
+        }
+        return {id_to_name[i] for i in ids if i in id_to_name}
 
     # ---------- submission ----------
 
