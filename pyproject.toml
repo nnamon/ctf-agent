@@ -24,6 +24,7 @@ ctf-status = "backend.cli_status:status"
 ctf-cleanup = "backend.cli:cleanup"
 ctf-session = "backend.cli_session:session_main"
 ctf-tokens = "backend.cli_tokens:tokens_main"
+ctf-pull = "backend.cli_pull:pull"
 
 [build-system]
 requires = ["hatchling"]
