@@ -178,6 +178,12 @@ class PwnCollegeBackend(CTFdSessionBackend):
         (populated eagerly here for every configured dojo) so a solve
         with name "welcome:ssh" maps to "welcome/welcome/ssh".
         """
+        # Make sure the in-memory metadata is populated; the slug-map
+        # loader needs at least one known challenge per (dojo, module)
+        # to know which page to GET.
+        if not self._challenge_meta:
+            await self.fetch_challenge_stubs()
+
         await self._ensure_logged_in()
         client = await self._ensure_client()
 
