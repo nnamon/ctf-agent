@@ -8,14 +8,16 @@ logs/
 *.jsonl
 
 # Challenges fetched at runtime (CTFd pull) are excluded by default.
-# Test-benchmark challenges are whitelisted below; their distfiles are
-# still excluded since `./build.sh` regenerates them.
 challenges_*/
 challenges/*/
-!challenges/web-vault/
-!challenges/pwn-echo/
-!challenges/jvm-deser/
 challenges/*/distfiles/
+
+# Toy / demo challenges are checked in as a self-hosted CTFd test
+# instance (see toy-challenges/README.md). Distfiles of binary-producing
+# challenges are still excluded — `./build.sh` regenerates them. The
+# pure-data ones (e.g. toy-xor-b64/distfiles/cipher.txt) ARE tracked.
+toy-challenges/*/distfiles/
+!toy-challenges/toy-xor-b64/distfiles/
 
 # Python
 __pycache__/

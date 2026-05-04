@@ -1,0 +1,57 @@
+# Self-hosted CTFd for the toy challenges. Used as a demo / test instance
+# for ctf-agent — see ./README.md for the full bootstrap workflow.
+#
+# Usage:
+#   cd toy-challenges
+#   docker compose up -d
+#   ./bootstrap.py
+# CTFd lands on http://localhost:8000 with admin / admin (change in
+# bootstrap.py if you care).
+
+services:
+  ctfd:
+    image: ctfd/ctfd:3.7.5
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - SECRET_KEY=ctf-agent-toy-demo-not-a-secret
+      - UPLOAD_FOLDER=/var/uploads
+      - DATABASE_URL=mysql+pymysql://ctfd:ctfd@db/ctfd
+      - REDIS_URL=redis://cache:6379
+      - WORKERS=1
+      - LOG_FOLDER=/var/log/CTFd
+      - REVERSE_PROXY=true
+    volumes:
+      - ctfd-uploads:/var/uploads
+      - ctfd-logs:/var/log/CTFd
+    depends_on:
+      - db
+      - cache
+
+  db:
+    image: mariadb:10.11
+    restart: unless-stopped
+    environment:
+      - MARIADB_ROOT_PASSWORD=ctfd
+      - MARIADB_USER=ctfd
+      - MARIADB_PASSWORD=ctfd
+      - MARIADB_DATABASE=ctfd
+      - MARIADB_AUTO_UPGRADE=1
+    volumes:
+      - ctfd-db:/var/lib/mysql
+    command:
+      - --max_connections=512
+      - --innodb-buffer-pool-size=512M
+
+  cache:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - ctfd-cache:/data
+
+volumes:
+  ctfd-uploads:
+  ctfd-logs:
+  ctfd-db:
+  ctfd-cache:

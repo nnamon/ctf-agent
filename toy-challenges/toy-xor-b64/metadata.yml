@@ -1,0 +1,13 @@
+name: Toy XOR-B64
+category: crypto
+value: 50
+description: |
+  Warmup. The flag was XOR-encrypted with a repeating key, then
+  base64-encoded. The key is the classic textbook XOR cipher key —
+  a five-letter yellow fruit you'd squeeze into your tea.
+
+  Flag format: flag{...}
+tags:
+  - xor
+  - base64
+  - warmup
