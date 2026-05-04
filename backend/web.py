@@ -1587,7 +1587,7 @@ def build_app(deps: Any, run_id: str) -> web.Application:
 async def start_dashboard(
     deps: Any,
     run_id: str,
-    port: int = 0,
+    port: int = 13337,
     host: str = "0.0.0.0",
 ) -> tuple[web.AppRunner, int]:
     """Start the dashboard. Returns (runner, actual_port).
@@ -1597,13 +1597,28 @@ async def start_dashboard(
     "127.0.0.1" via the coordinator's --msg-host flag for sensitive
     deployments.
 
+    Default port is 13337 so operators can bookmark a stable URL.
+    If that port is in use we automatically fall back to an
+    OS-assigned ephemeral port and log the actual choice.
+
     Caller is responsible for `await runner.cleanup()` on shutdown.
     """
     app = build_app(deps, run_id)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host=host, port=port)
-    await site.start()
+    try:
+        await site.start()
+    except OSError as e:
+        if port != 0:
+            logger.warning(
+                "Dashboard port %d unavailable (%s); falling back to auto-pick",
+                port, e,
+            )
+            site = web.TCPSite(runner, host=host, port=0)
+            await site.start()
+        else:
+            raise
     actual_port = site._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
     logger.info("Dashboard listening on http://%s:%d", host, actual_port)
     return runner, actual_port

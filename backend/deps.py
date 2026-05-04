@@ -47,7 +47,9 @@ class CoordinatorDeps:
     no_submit: bool = False
     max_concurrent_challenges: int = 10
 
-    msg_port: int = 0  # 0 = auto-pick free port
+    # Stable port so operators can bookmark http://<host>:13337/. Falls
+    # back to OS-assigned if 13337 is already taken on this machine.
+    msg_port: int = 13337
     msg_host: str = "0.0.0.0"  # default: reachable on LAN/VPN; flip to 127.0.0.1 to lock down
 
     # Post-mortem writeup config

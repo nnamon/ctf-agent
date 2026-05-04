@@ -111,7 +111,7 @@ async def run_claude_coordinator(
     challenges_root: str = "challenges",
     no_submit: bool = False,
     coordinator_model: str | None = None,
-    msg_port: int = 0,
+    msg_port: int = 13337,
     msg_host: str = "0.0.0.0",
     no_writeup: bool = False,
     writeup_model: str = "claude-opus-4-7",

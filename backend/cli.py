@@ -45,7 +45,10 @@ def _setup_logging(verbose: bool = False) -> None:
 @click.option("--coordinator-model", default=None, help="Model for coordinator (default: gpt-5.5 for codex, claude-opus-4-7 for claude)")
 @click.option("--coordinator", default="codex", type=click.Choice(["claude", "codex"]), help="Coordinator backend (default: codex)")
 @click.option("--max-challenges", default=10, type=int, help="Max challenges solved concurrently")
-@click.option("--msg-port", default=0, type=int, help="Dashboard / operator-message port (0 = auto)")
+@click.option("--msg-port", default=13337, type=int,
+              help="Dashboard / operator-message port. Default 13337 — falls "
+                   "back to an auto-picked port if 13337 is already in use. "
+                   "Pass 0 to force auto-pick.")
 @click.option("--msg-host", default="0.0.0.0",
               help="Dashboard bind address (default 0.0.0.0 = reachable on "
                    "LAN/VPN). Use 127.0.0.1 for localhost-only — there is "
@@ -360,7 +363,7 @@ async def _run_coordinator(
     coordinator_model: str | None,
     coordinator_backend: str,
     max_challenges: int,
-    msg_port: int = 0,
+    msg_port: int = 13337,
     msg_host: str = "0.0.0.0",
     no_writeup: bool = False,
     writeup_model: str = "claude-opus-4-7",
@@ -507,7 +510,7 @@ def cleanup(run_id: str | None, age: str | None, all_: bool) -> None:
 
 @click.command()
 @click.argument("message")
-@click.option("--port", default=9400, type=int, help="Coordinator message port")
+@click.option("--port", default=13337, type=int, help="Coordinator message port (matches ctf-solve --msg-port default)")
 @click.option("--host", default="127.0.0.1", help="Coordinator host")
 def msg(message: str, port: int, host: str) -> None:
     """Send a message to the running coordinator."""
