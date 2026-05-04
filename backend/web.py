@@ -347,31 +347,125 @@ pre.log {
   color: var(--md-sys-color-outline);
 }
 
-/* Challenge cards (per-challenge) */
-.challenge {
+/* CTF scoreboard — category sections + challenge tiles */
+.category {
+  margin-bottom: 24px;
+}
+.category-header {
+  display: flex; align-items: baseline; gap: 12px;
+  margin-bottom: 12px; padding: 0 4px;
+}
+.category-header h3 {
+  margin: 0;
+  font-size: 14px; line-height: 20px; font-weight: 500;
+  letter-spacing: 0.045em; text-transform: uppercase;
+  color: var(--md-sys-color-primary);
+}
+.category-header .count {
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+.tile {
   background: var(--md-sys-color-surface-container);
   border-radius: var(--md-shape-md);
   box-shadow: var(--md-elev-1);
+  padding: 14px 16px;
+  display: flex; flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+  transition: background-color .15s, box-shadow .15s, transform .1s;
+  border: 1px solid transparent;
+  position: relative;
   overflow: hidden;
 }
-.challenge-header {
+.tile:hover {
+  background: var(--md-sys-color-surface-container-high);
+  box-shadow: var(--md-elev-2);
+}
+.tile:active { transform: scale(.98); }
+.tile.selected {
+  border-color: var(--md-sys-color-primary);
+  box-shadow: var(--md-elev-2);
+}
+.tile.solved {
+  background: var(--md-success-bg);
+  border-color: rgba(165, 214, 167, .35);
+}
+.tile.solved .name { color: var(--md-success); }
+.tile.solved::after {
+  content: "check_circle";
+  font-family: "Material Symbols Outlined";
+  position: absolute; top: 8px; right: 8px;
+  color: var(--md-success); font-size: 18px;
+}
+.tile .name {
+  font-size: 14px; font-weight: 500; line-height: 1.3;
+  color: var(--md-sys-color-on-surface);
+  overflow-wrap: anywhere;
+}
+.tile .value {
+  font-size: 22px; line-height: 28px; font-weight: 500;
+  color: var(--md-sys-color-on-surface);
+  letter-spacing: 0;
+}
+.tile .value-suffix {
+  font-size: 11px; font-weight: 400;
+  color: var(--md-sys-color-on-surface-variant);
+  margin-left: 4px;
+}
+.tile .stats {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: auto;
+  font-size: 11px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.tile .stats .chip { font-size: 10px; padding: 2px 8px; }
+.tile .stats .cost {
+  margin-left: auto;
+  font-family: "Roboto Mono", monospace;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* Detail panel that slides in below the selected tile */
+.detail {
+  margin-top: 12px;
+  background: var(--md-sys-color-surface-container);
+  border-radius: var(--md-shape-md);
+  box-shadow: var(--md-elev-2);
+  border: 2px solid var(--md-sys-color-primary);
+  overflow: hidden;
+  animation: detail-in .15s ease-out;
+}
+@keyframes detail-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.detail-header {
   display: flex; align-items: center; gap: 12px;
   padding: 16px 20px;
   border-bottom: 1px solid var(--md-sys-color-outline-variant);
   background: var(--md-sys-color-surface-container-low);
 }
-.challenge-header .title {
-  font-size: 18px; line-height: 24px; font-weight: 500;
-  letter-spacing: 0.0125em;            /* title-large */
+.detail-header .title {
+  font-size: 22px; line-height: 28px; font-weight: 500;
+  letter-spacing: 0;
   color: var(--md-sys-color-on-surface);
 }
-.challenge-header .meta {
-  color: var(--md-sys-color-on-surface-variant); font-size: 12px;
+.detail-header .meta {
+  color: var(--md-sys-color-on-surface-variant); font-size: 13px;
 }
-.challenge-header .spacer { flex: 1; }
-.challenge-header .cost {
-  font-family: "Roboto Mono", monospace;
-  color: var(--md-sys-color-on-surface-variant); font-size: 12px;
+.detail-header .spacer { flex: 1; }
+.detail-header .close {
+  padding: 6px;
+  border-radius: 50%;
+  width: 36px; height: 36px;
+  display: inline-flex; align-items: center; justify-content: center;
 }
 
 .solvers { width: 100%; }
@@ -391,10 +485,21 @@ pre.log {
 }
 .log-row pre.log { max-height: 280px; }
 
-.challenge-footer {
+.detail-footer {
   display: flex; justify-content: flex-end; gap: 8px;
   padding: 12px 20px;
   background: var(--md-sys-color-surface-container-low);
+}
+
+.empty-detail {
+  padding: 24px;
+  text-align: center;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.empty-detail .icon {
+  font-family: "Material Symbols Outlined";
+  font-size: 36px; display: block; margin-bottom: 8px;
+  color: var(--md-sys-color-outline);
 }
 
 /* Material Symbols icon helper */
@@ -426,15 +531,11 @@ pre.log {
 </header>
 <main>
   <div class="col-main">
+    <div id="board"></div>
+    <div id="detail-host"></div>
+
     <section class="card">
-      <h2>Steer</h2>
-      <form onsubmit="return doSpawn(event)">
-        <div class="field"><input type="text" id="spawn-name"
-          placeholder="Challenge name (e.g. Toy XOR-B64)"></div>
-        <button type="submit" class="filled">
-          <span class="icon-inline">play_arrow</span>Spawn
-        </button>
-      </form>
+      <h2>Coordinator message</h2>
       <form onsubmit="return doMsg(event)">
         <div class="field"><input type="text" id="msg-text"
           placeholder="Send a message to the coordinator"></div>
@@ -443,8 +544,6 @@ pre.log {
         </button>
       </form>
     </section>
-
-    <div id="challenges"></div>
   </div>
 
   <div class="col-side">
@@ -457,19 +556,27 @@ pre.log {
 
 <script>
 const ev = document.getElementById('events');
-const challengesEl = document.getElementById('challenges');
+const boardEl = document.getElementById('board');
+const detailHostEl = document.getElementById('detail-host');
 
 const fmtUsd = n => '$' + (n || 0).toFixed(2);
 const escapeHTML = s => String(s).replace(/[&<>"']/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-// Track which (challenge, model) log rows are expanded so renders preserve them.
-const expandedLogs = new Set();
+// UI state
+let selected = null;                 // currently expanded challenge name (or null)
+const expandedLogs = new Set();      // (challenge, model) log rows to keep open
 function logKey(chal, model) { return chal + '\\u241F' + model; }
 
 function chip(status) {
-  const cls = status === 'running' ? 'run' : (status === 'killed' ? 'killed' : 'done');
-  return `<span class="chip ${cls}">${status}</span>`;
+  const cls = status === 'running' ? 'run'
+            : status === 'killed' ? 'killed'
+            : status === 'done'    ? 'done'
+            : '';                                     // queued = no chip color
+  const label = status;
+  return cls
+    ? `<span class="chip ${cls}">${label}</span>`
+    : `<span class="chip">${label}</span>`;
 }
 
 function renderHeader(s) {
@@ -494,44 +601,116 @@ function renderHeader(s) {
   }
 }
 
-function renderChallenges(swarms) {
-  if (!swarms.length) {
-    challengesEl.innerHTML =
+// Group challenges by category for the scoreboard layout.
+function groupByCategory(challenges) {
+  const groups = new Map();
+  for (const c of challenges) {
+    const cat = (c.category || 'misc').trim() || 'misc';
+    if (!groups.has(cat)) groups.set(cat, []);
+    groups.get(cat).push(c);
+  }
+  // Sort each group by point value, then name.
+  for (const arr of groups.values()) {
+    arr.sort((a, b) => (a.value - b.value) || a.challenge.localeCompare(b.challenge));
+  }
+  return groups;
+}
+
+function renderBoard(challenges) {
+  if (!challenges.length) {
+    boardEl.innerHTML =
       '<div class="card empty"><span class="icon">flag</span>'
-      + 'No active swarms. Use the spawn box above to start one.</div>';
+      + 'No challenges yet. Either ctf-pull hasn\\'t been run or CTFd hasn\\'t responded.</div>';
     return;
   }
+
+  const groups = groupByCategory(challenges);
+  const cats = Array.from(groups.keys()).sort();
+
   let html = '';
-  for (const sw of swarms) {
-    const cName = escapeHTML(sw.challenge);
-    const cNameEnc = encodeURIComponent(sw.challenge);
-    html += `<section class="challenge" data-challenge="${cName}">
-      <div class="challenge-header">
-        <span class="title">${cName}</span>
-        <span class="meta">${escapeHTML(sw.category || '—')} · ${sw.value || 0}pts</span>
-        ${chip(sw.status)}
-        <span class="spacer"></span>
-        <span class="cost">${fmtUsd(sw.cost_usd)} across ${sw.solvers.length} solvers</span>
+  for (const cat of cats) {
+    const arr = groups.get(cat);
+    const solvedCount = arr.filter(c => c.ctfd_solved).length;
+    html += `<div class="category">
+      <div class="category-header">
+        <h3>${escapeHTML(cat)}</h3>
+        <span class="count">${solvedCount}/${arr.length} solved</span>
       </div>
-      <table class="solvers"><thead><tr>
-        <th>Model</th><th>Step</th><th class="right">Cost</th>
-        <th>Flag</th><th class="actions"></th>
-      </tr></thead><tbody>`;
-    for (const sv of sw.solvers) {
-      const k = logKey(sw.challenge, sv.model);
+      <div class="tiles">`;
+    for (const c of arr) {
+      const cls = [
+        'tile',
+        c.ctfd_solved ? 'solved' : '',
+        selected === c.challenge ? 'selected' : '',
+      ].filter(Boolean).join(' ');
+      const stat = c.status === 'queued' && c.ctfd_solved ? '' : chip(c.status);
+      const cost = c.cost_usd > 0
+        ? `<span class="cost">${fmtUsd(c.cost_usd)}</span>` : '';
+      html += `<div class="${cls}" onclick="selectChallenge('${encodeURIComponent(c.challenge)}')">
+        <div class="name">${escapeHTML(c.challenge)}</div>
+        <div class="value">${c.value || 0}<span class="value-suffix">pts</span></div>
+        <div class="stats">${stat}${cost}</div>
+      </div>`;
+    }
+    html += '</div></div>';
+  }
+  boardEl.innerHTML = html;
+}
+
+function renderDetail(challenges) {
+  if (!selected) { detailHostEl.innerHTML = ''; return; }
+  const c = challenges.find(x => x.challenge === selected);
+  if (!c) {
+    selected = null;
+    detailHostEl.innerHTML = '';
+    return;
+  }
+
+  const cNameEnc = encodeURIComponent(c.challenge);
+  let html = `<section class="detail">
+    <div class="detail-header">
+      <div>
+        <div class="title">${escapeHTML(c.challenge)}</div>
+        <div class="meta">${escapeHTML(c.category || '—')} · ${c.value || 0} pts · ${c.solves || 0} CTFd solves</div>
+      </div>
+      <span class="spacer"></span>
+      ${chip(c.status)}
+      ${c.cost_usd > 0 ? `<span class="meta mono">${fmtUsd(c.cost_usd)} spent</span>` : ''}
+      <button class="close" onclick="closeDetail()" aria-label="Close">
+        <span class="icon-inline" style="margin:0">close</span>
+      </button>
+    </div>`;
+
+  if (!c.solvers.length) {
+    html += `<div class="empty-detail">
+      <span class="icon">play_circle</span>
+      No swarm spawned for this challenge yet.
+    </div>
+    <div class="detail-footer">
+      <button class="filled" onclick="spawnNamed('${cNameEnc}')">
+        <span class="icon-inline">play_arrow</span>Spawn swarm
+      </button>
+    </div>`;
+  } else {
+    html += `<table class="solvers"><thead><tr>
+      <th>Model</th><th>Step</th><th class="right">Cost</th>
+      <th>Flag</th><th class="actions"></th>
+    </tr></thead><tbody>`;
+    for (const sv of c.solvers) {
+      const k = logKey(c.challenge, sv.model);
       const isOpen = expandedLogs.has(k);
       const flagCell = sv.confirmed
-        ? `<span style="color:var(--green);font-family:ui-monospace,monospace">${escapeHTML(sv.flag || '★')}</span>`
+        ? `<span style="color:var(--md-success);font-family:'Roboto Mono',monospace">${escapeHTML(sv.flag || '★')}</span>`
         : (sv.flag
-            ? `<span class="mono" style="color:var(--yellow)">${escapeHTML(sv.flag)} (unconfirmed)</span>`
-            : '<span style="color:var(--muted)">—</span>');
+            ? `<span class="mono" style="color:var(--md-warning)">${escapeHTML(sv.flag)} (unconfirmed)</span>`
+            : '<span style="color:var(--md-sys-color-on-surface-variant)">—</span>');
       html += `<tr class="${sv.confirmed ? 'winner' : ''}">
         <td class="model">${escapeHTML(sv.model)}</td>
-        <td><span style="color:var(--fg-dim)">${sv.step_count}</span></td>
+        <td>${sv.step_count}</td>
         <td class="right mono">${fmtUsd(sv.cost_usd)}</td>
         <td>${flagCell}</td>
         <td class="actions">
-          <button class="small outlined" onclick="toggleLog('${cNameEnc}','${encodeURIComponent(sv.model)}')">${isOpen ? 'Hide' : 'Log'}</button>
+          <button class="small outlined" onclick="toggleLog('${cNameEnc}','${encodeURIComponent(sv.model)}')">${isOpen ? 'Hide log' : 'Log'}</button>
         </td>
       </tr>`;
       if (isOpen) {
@@ -540,17 +719,52 @@ function renderChallenges(swarms) {
         </tr>`;
       }
     }
-    html += `</tbody></table>
-      <div class="challenge-footer">
+    html += '</tbody></table>';
+
+    // Footer actions vary with status.
+    if (c.status === 'running') {
+      html += `<div class="detail-footer">
         <button class="danger" onclick="killSwarm('${cNameEnc}')">
           <span class="icon-inline">stop_circle</span>Kill swarm
         </button>
-      </div>
-    </section>`;
+      </div>`;
+    } else if (c.status === 'done' || c.status === 'killed') {
+      html += `<div class="detail-footer">
+        <button class="filled" onclick="spawnNamed('${cNameEnc}')">
+          <span class="icon-inline">refresh</span>Re-spawn
+        </button>
+      </div>`;
+    }
   }
-  challengesEl.innerHTML = html;
-  // Refresh the open logs after re-render.
+
+  html += '</section>';
+  detailHostEl.innerHTML = html;
   for (const k of expandedLogs) fetchLogInto(k);
+}
+
+function selectChallenge(nameEnc) {
+  const name = decodeURIComponent(nameEnc);
+  selected = (selected === name) ? null : name;
+  if (latestStatus) {
+    renderBoard(latestStatus.challenges);
+    renderDetail(latestStatus.challenges);
+  }
+  // Scroll the detail panel into view if we just opened it.
+  if (selected) setTimeout(() => detailHostEl.scrollIntoView({behavior:'smooth', block:'start'}), 50);
+}
+
+function closeDetail() {
+  selected = null;
+  if (latestStatus) {
+    renderBoard(latestStatus.challenges);
+    detailHostEl.innerHTML = '';
+  }
+}
+
+async function spawnNamed(nameEnc) {
+  await fetch('/api/spawn', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({challenge_name: decodeURIComponent(nameEnc)})});
 }
 
 function appendEvent(e) {
@@ -564,17 +778,6 @@ function appendEvent(e) {
                    <span class="body">${escapeHTML(e.text || '')}</span>`;
   ev.prepend(div);
   while (ev.children.length > 200) ev.lastChild.remove();
-}
-
-async function doSpawn(e) {
-  e.preventDefault();
-  const name = document.getElementById('spawn-name').value.trim();
-  if (!name) return false;
-  await fetch('/api/spawn', {method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({challenge_name: name})});
-  document.getElementById('spawn-name').value = '';
-  return false;
 }
 
 async function doMsg(e) {
@@ -600,8 +803,8 @@ function toggleLog(chalEnc, modelEnc) {
   const k = logKey(chal, model);
   if (expandedLogs.has(k)) expandedLogs.delete(k);
   else expandedLogs.add(k);
-  // Re-render to add/remove the inline log row.
-  if (latestStatus) renderChallenges(latestStatus.swarms);
+  // Re-render the detail panel to add/remove the inline log row.
+  if (latestStatus) renderDetail(latestStatus.challenges);
 }
 
 async function fetchLogInto(k) {
@@ -621,7 +824,8 @@ let latestStatus = null;
 function applyStatus(s) {
   latestStatus = s;
   renderHeader(s);
-  renderChallenges(s.swarms);
+  renderBoard(s.challenges);
+  renderDetail(s.challenges);
 }
 
 // SSE wiring
@@ -681,36 +885,95 @@ class EventHub:
 # ── Snapshot builder ────────────────────────────────────────────────────────
 
 def _build_status(deps: Any, run_id: str) -> dict:
-    """Render the coordinator's live state into a JSON-serializable dict."""
-    swarms_out = []
-    for name, swarm in deps.swarms.items():
-        cancelled = swarm.cancel_event.is_set()
-        task = deps.swarm_tasks.get(name)
-        done = task is not None and task.done()
-        status = "killed" if cancelled and not done else (
-            "done" if done else "running"
-        )
-        solvers_out = []
-        for spec, solver in swarm.solvers.items():
-            agent_name = getattr(solver, "agent_name", f"{name}/{spec}")
-            cost = 0.0
-            if agent_name in deps.cost_tracker.by_agent:
-                cost = deps.cost_tracker.by_agent[agent_name].cost_usd
-            solvers_out.append({
-                "model": spec,
-                "step_count": getattr(solver, "_step_count", 0),
-                "cost_usd": cost,
-                "flag": getattr(solver, "_flag", None),
-                "confirmed": getattr(solver, "_confirmed", False),
-            })
-        swarm_cost = sum(s["cost_usd"] for s in solvers_out)
-        meta = swarm.meta
-        swarms_out.append({
-            "challenge": name,
+    """Render the coordinator's live state into a JSON-serializable dict.
+
+    Lists EVERY known challenge (from the poller + on-disk pre-loaded
+    metadata) — not just spawned ones. Swarm state is merged in when
+    a swarm exists for that challenge. Each entry has:
+
+      challenge / category / value / solves     (from CTFd / metadata.yml)
+      ctfd_solved                               (from poller.known_solved)
+      status                                    one of:
+          "queued"    no swarm spawned
+          "running"   swarm active
+          "done"      swarm finished (winner or all gave up)
+          "killed"    swarm cancelled by operator/coordinator
+      solvers                                   [] when not spawned
+      cost_usd                                  sum across active solvers (0 when not spawned)
+    """
+    poller = getattr(deps, "poller", None)
+    stubs_by_name: dict[str, dict] = {}
+    solved: set[str] = set()
+    if poller is not None:
+        for s in poller.stubs:
+            n = s.get("name")
+            if n:
+                stubs_by_name[n] = s
+        try:
+            solved = set(poller.known_solved)
+        except Exception:
+            solved = set()
+
+    # Pre-loaded / pulled challenges that aren't on the live poller's list yet
+    # (e.g. session was started without --ctfd-url, or operator pre-pulled).
+    metas: dict[str, Any] = getattr(deps, "challenge_metas", {}) or {}
+    for name, meta in metas.items():
+        stubs_by_name.setdefault(name, {
+            "name": name,
             "category": getattr(meta, "category", "") or "",
             "value": getattr(meta, "value", 0) or 0,
+            "solves": 0,
+        })
+
+    # Anything spawned but not yet in stubs (rare, but keeps the UI consistent)
+    for name in deps.swarms.keys():
+        stubs_by_name.setdefault(name, {
+            "name": name, "category": "", "value": 0, "solves": 0,
+        })
+
+    challenges_out = []
+    for name in sorted(stubs_by_name.keys()):
+        stub = stubs_by_name[name]
+        swarm = deps.swarms.get(name)
+        solvers_out: list[dict] = []
+        cost = 0.0
+        if swarm is not None:
+            cancelled = swarm.cancel_event.is_set()
+            task = deps.swarm_tasks.get(name)
+            done = task is not None and task.done()
+            if name in solved:
+                status = "done"
+            elif cancelled and not done:
+                status = "killed"
+            elif done:
+                status = "done"
+            else:
+                status = "running"
+            for spec, solver in swarm.solvers.items():
+                agent_name = getattr(solver, "agent_name", f"{name}/{spec}")
+                sc = 0.0
+                if agent_name in deps.cost_tracker.by_agent:
+                    sc = deps.cost_tracker.by_agent[agent_name].cost_usd
+                solvers_out.append({
+                    "model": spec,
+                    "step_count": getattr(solver, "_step_count", 0),
+                    "cost_usd": sc,
+                    "flag": getattr(solver, "_flag", None),
+                    "confirmed": getattr(solver, "_confirmed", False),
+                })
+            cost = sum(s["cost_usd"] for s in solvers_out)
+        else:
+            # Never spawned — show solve status from CTFd if known.
+            status = "done" if name in solved else "queued"
+
+        challenges_out.append({
+            "challenge": name,
+            "category": stub.get("category", "") or "",
+            "value": stub.get("value", 0) or 0,
+            "solves": stub.get("solves", 0) or 0,
+            "ctfd_solved": name in solved,
             "status": status,
-            "cost_usd": swarm_cost,
+            "cost_usd": cost,
             "solvers": solvers_out,
         })
 
@@ -727,7 +990,9 @@ def _build_status(deps: Any, run_id: str) -> dict:
             "total_usd": deps.cost_tracker.total_cost_usd,
             "total_tokens": deps.cost_tracker.total_tokens,
         },
-        "swarms": swarms_out,
+        # Renamed from `swarms` to `challenges` since we now list every
+        # known challenge regardless of whether a swarm has spawned for it.
+        "challenges": challenges_out,
         "results": deps.results,
     }
 

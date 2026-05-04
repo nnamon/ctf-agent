@@ -25,6 +25,10 @@ class CTFdPoller:
 
     _known_challenges: set[str] = field(default_factory=set)
     _known_solved: set[str] = field(default_factory=set)
+    # Last fetched stub list — kept around so the dashboard can render
+    # category/value/solve-count without each consumer re-querying CTFd.
+    # Same shape returned by Backend.fetch_challenge_stubs().
+    _stubs: list[dict] = field(default_factory=list)
     _event_queue: asyncio.Queue[PollEvent] = field(default_factory=asyncio.Queue)
     _task: asyncio.Task | None = field(default=None, repr=False)
     _stop: asyncio.Event = field(default_factory=asyncio.Event)
@@ -43,6 +47,7 @@ class CTFdPoller:
         """Initial fetch — just populate known state, no events."""
         try:
             stubs = await self.ctfd.fetch_challenge_stubs()
+            self._stubs = list(stubs)
             self._known_challenges = {ch["name"] for ch in stubs}
             self._known_solved = await self.ctfd.fetch_solved_names()
         except Exception as e:
@@ -82,6 +87,11 @@ class CTFdPoller:
     def known_solved(self) -> set[str]:
         return set(self._known_solved)
 
+    @property
+    def stubs(self) -> list[dict]:
+        """Most-recently-fetched challenge stubs (name/category/value/solves)."""
+        return list(self._stubs)
+
     async def _poll_once(self) -> None:
         try:
             stubs = await self.ctfd.fetch_challenge_stubs()
@@ -115,6 +125,7 @@ class CTFdPoller:
 
             self._known_challenges = current_names
             self._known_solved = current_solved
+            self._stubs = list(stubs)
 
         except Exception as e:
             logger.warning(f"Poll error: {e}")

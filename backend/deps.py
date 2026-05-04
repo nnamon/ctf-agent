@@ -67,4 +67,9 @@ class CoordinatorDeps:
     # doesn't run a coordinator). Use deps.event_hub.broadcast(kind, ...)
     # to push live events into the SSE stream.
     event_hub: Any = None
+    # Reference to the running CTFdPoller, set by run_event_loop. The
+    # dashboard reads .stubs / .known_solved off it so /api/status can
+    # return EVERY known challenge (not just spawned ones) with their
+    # category / point value / solve count.
+    poller: Any = None
     challenge_metas: dict[str, Any] = field(default_factory=dict)

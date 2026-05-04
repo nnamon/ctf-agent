@@ -92,6 +92,9 @@ async def run_event_loop(
     """
     poller = CTFdPoller(ctfd=ctfd, interval_s=5.0)
     await poller.start()
+    # Expose to deps so the dashboard can read the full challenge list
+    # (not just the spawned ones) for /api/status.
+    deps.poller = poller
 
     # Live web dashboard. Replaces the previous hand-rolled HTTP server,
     # but keeps /msg backward compat so the existing ctf-msg CLI still works.
