@@ -42,10 +42,14 @@ INDEX_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <title>ctf-agent dashboard</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- Material Design 3 typography. Self-host these files for offline use. -->
+<!-- Roboto from Google Fonts for MD3 typography. Body still degrades to a
+     system sans-serif if the network blocks Google. We deliberately avoid
+     pulling Material Symbols — the font is ~1MB and when it fails the page
+     renders literal "play_arrow" / "close" text everywhere. We use simple
+     Unicode glyphs instead. Self-host Roboto if going air-gapped. -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 /*
  * Material Design 3 dark theme.
@@ -342,8 +346,7 @@ pre.log {
   font-size: 14px;
 }
 .empty .icon {
-  font-family: "Material Symbols Outlined";
-  font-size: 36px; display: block; margin-bottom: 8px;
+  font-size: 28px; display: block; margin-bottom: 8px;
   color: var(--md-sys-color-outline);
 }
 
@@ -399,10 +402,9 @@ pre.log {
 }
 .tile.solved .name { color: var(--md-success); }
 .tile.solved::after {
-  content: "check_circle";
-  font-family: "Material Symbols Outlined";
-  position: absolute; top: 8px; right: 8px;
-  color: var(--md-success); font-size: 18px;
+  content: "✓";
+  position: absolute; top: 6px; right: 12px;
+  color: var(--md-success); font-size: 20px; font-weight: 700;
 }
 .tile .name {
   font-size: 14px; font-weight: 500; line-height: 1.3;
@@ -497,17 +499,16 @@ pre.log {
   color: var(--md-sys-color-on-surface-variant);
 }
 .empty-detail .icon {
-  font-family: "Material Symbols Outlined";
-  font-size: 36px; display: block; margin-bottom: 8px;
+  font-size: 28px; display: block; margin-bottom: 8px;
   color: var(--md-sys-color-outline);
 }
 
-/* Material Symbols icon helper */
+/* Inline glyph helper — small Unicode/text marker before button labels */
 .icon-inline {
-  font-family: "Material Symbols Outlined";
-  font-size: 18px;
-  vertical-align: middle;
+  display: inline-block;
   margin-right: 6px;
+  vertical-align: baseline;
+  opacity: .9;
 }
 </style></head>
 <body>
@@ -539,9 +540,7 @@ pre.log {
       <form onsubmit="return doMsg(event)">
         <div class="field"><input type="text" id="msg-text"
           placeholder="Send a message to the coordinator"></div>
-        <button type="submit" class="outlined">
-          <span class="icon-inline">send</span>Send
-        </button>
+        <button type="submit" class="outlined">Send</button>
       </form>
     </section>
   </div>
@@ -616,16 +615,36 @@ function groupByCategory(challenges) {
   return groups;
 }
 
+// Track the last-rendered board signature so we can skip full re-renders
+// when nothing visible has changed — eliminates the every-2s flicker
+// from SSE status pushes that don't actually update any tile.
+let lastBoardSig = "";
+
 function renderBoard(challenges) {
   if (!challenges.length) {
-    boardEl.innerHTML =
-      '<div class="card empty"><span class="icon">flag</span>'
-      + 'No challenges yet. Either ctf-pull hasn\\'t been run or CTFd hasn\\'t responded.</div>';
+    if (lastBoardSig !== "EMPTY") {
+      boardEl.innerHTML =
+        '<div class="card empty"><span class="icon">⚑</span>'
+        + 'No challenges yet. Either ctf-pull hasn\\'t been run or CTFd hasn\\'t responded.</div>';
+      lastBoardSig = "EMPTY";
+    }
     return;
   }
 
   const groups = groupByCategory(challenges);
   const cats = Array.from(groups.keys()).sort();
+
+  // Build a signature that changes ONLY when something visible changes.
+  // Cost rounded to cents — sub-cent updates don't ever change the tile.
+  const sig = JSON.stringify({
+    sel: selected,
+    items: challenges.map(c => [
+      c.challenge, c.category, c.value, c.status, c.ctfd_solved,
+      Math.round(c.cost_usd * 100),
+    ]),
+  });
+  if (sig === lastBoardSig) return;
+  lastBoardSig = sig;
 
   let html = '';
   for (const cat of cats) {
@@ -657,14 +676,32 @@ function renderBoard(challenges) {
   boardEl.innerHTML = html;
 }
 
+let lastDetailSig = "";
+
 function renderDetail(challenges) {
-  if (!selected) { detailHostEl.innerHTML = ''; return; }
+  if (!selected) {
+    if (lastDetailSig !== "") { detailHostEl.innerHTML = ''; lastDetailSig = ''; }
+    return;
+  }
   const c = challenges.find(x => x.challenge === selected);
   if (!c) {
     selected = null;
     detailHostEl.innerHTML = '';
+    lastDetailSig = '';
     return;
   }
+  // Same anti-flicker pattern as renderBoard.
+  const sig = JSON.stringify({
+    selected, status: c.status,
+    cost: Math.round(c.cost_usd * 100),
+    expanded: Array.from(expandedLogs).sort(),
+    solvers: c.solvers.map(s => [
+      s.model, s.step_count, Math.round(s.cost_usd * 100),
+      s.flag, s.confirmed,
+    ]),
+  });
+  if (sig === lastDetailSig) return;
+  lastDetailSig = sig;
 
   const cNameEnc = encodeURIComponent(c.challenge);
   let html = `<section class="detail">
@@ -676,20 +713,16 @@ function renderDetail(challenges) {
       <span class="spacer"></span>
       ${chip(c.status)}
       ${c.cost_usd > 0 ? `<span class="meta mono">${fmtUsd(c.cost_usd)} spent</span>` : ''}
-      <button class="close" onclick="closeDetail()" aria-label="Close">
-        <span class="icon-inline" style="margin:0">close</span>
-      </button>
+      <button class="close" onclick="closeDetail()" aria-label="Close">✕</button>
     </div>`;
 
   if (!c.solvers.length) {
     html += `<div class="empty-detail">
-      <span class="icon">play_circle</span>
+      <span class="icon">▶</span>
       No swarm spawned for this challenge yet.
     </div>
     <div class="detail-footer">
-      <button class="filled" onclick="spawnNamed('${cNameEnc}')">
-        <span class="icon-inline">play_arrow</span>Spawn swarm
-      </button>
+      <button class="filled" onclick="spawnNamed('${cNameEnc}')">Spawn swarm</button>
     </div>`;
   } else {
     html += `<table class="solvers"><thead><tr>
@@ -724,18 +757,18 @@ function renderDetail(challenges) {
     // Footer actions vary with status.
     if (c.status === 'running') {
       html += `<div class="detail-footer">
-        <button class="danger" onclick="killSwarm('${cNameEnc}')">
-          <span class="icon-inline">stop_circle</span>Kill swarm
-        </button>
+        <button class="danger" onclick="killSwarm('${cNameEnc}')">Kill swarm</button>
       </div>`;
     } else if (c.status === 'done' || c.status === 'killed') {
       html += `<div class="detail-footer">
-        <button class="filled" onclick="spawnNamed('${cNameEnc}')">
-          <span class="icon-inline">refresh</span>Re-spawn
-        </button>
+        <button class="outlined" onclick="toggleWriteup('${cNameEnc}')">Writeup</button>
+        <button class="filled" onclick="spawnNamed('${cNameEnc}')">Re-spawn</button>
       </div>`;
     }
   }
+
+  // Writeup region (filled lazily by toggleWriteup)
+  html += `<div class="writeup-region" id="writeup-${cNameEnc}" style="display:none"></div>`;
 
   html += '</section>';
   detailHostEl.innerHTML = html;
@@ -765,6 +798,33 @@ async function spawnNamed(nameEnc) {
   await fetch('/api/spawn', {method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({challenge_name: decodeURIComponent(nameEnc)})});
+}
+
+async function toggleWriteup(nameEnc) {
+  const el = document.getElementById('writeup-' + nameEnc);
+  if (!el) return;
+  if (el.style.display !== 'none') { el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.innerHTML = '<div class="empty-detail">Loading writeup…</div>';
+  try {
+    const r = await fetch('/api/writeup/' + nameEnc);
+    const d = await r.json();
+    if (d.text) {
+      const safePath = escapeHTML(d.path || '');
+      el.innerHTML = `<div style="padding:16px 20px">
+        <div class="meta" style="margin-bottom:8px;color:var(--md-sys-color-on-surface-variant);font-size:12px">
+          ${safePath}
+        </div>
+        <pre class="log" style="max-height:480px">${escapeHTML(d.text)}</pre>
+      </div>`;
+    } else {
+      el.innerHTML = '<div class="empty-detail">No writeup found yet — '
+        + 'one is generated only after a confirmed solve.</div>';
+    }
+  } catch (e) {
+    el.innerHTML = '<div class="empty-detail">Error loading writeup: '
+      + escapeHTML(String(e)) + '</div>';
+  }
 }
 
 function appendEvent(e) {
@@ -938,14 +998,20 @@ def _build_status(deps: Any, run_id: str) -> dict:
         solvers_out: list[dict] = []
         cost = 0.0
         if swarm is not None:
+            # cancel_event is set in two cases: a winner found the flag
+            # (swarm.kill self-issued) OR the operator/coordinator killed
+            # the swarm. Distinguish by whether swarm.winner is populated.
             cancelled = swarm.cancel_event.is_set()
+            won = getattr(swarm, "winner", None) is not None
             task = deps.swarm_tasks.get(name)
-            done = task is not None and task.done()
-            if name in solved:
+            # swarm_tasks gets popped on completion, so missing-task ⇒ done
+            task_done = task is None or task.done()
+            if won or name in solved:
                 status = "done"
-            elif cancelled and not done:
+            elif cancelled:
                 status = "killed"
-            elif done:
+            elif task_done:
+                # All solvers finished but no winner — give up state
                 status = "done"
             else:
                 status = "running"
@@ -1049,6 +1115,38 @@ async def _events(request: web.Request) -> web.StreamResponse:
     return resp
 
 
+async def _writeup(request: web.Request) -> web.Response:
+    """Return the most recent writeup markdown for a challenge if one exists.
+
+    Looks under sessions/<session_name>/writeups/<slug>-*.md, picking the
+    most recent by mtime. Slugify rule mirrors postmortem._slugify (lower,
+    spaces->-, strip non-alnum-or-dash).
+    """
+    chal = request.match_info["chal"]
+    deps = request.app["deps"]
+    session_name = getattr(deps.settings, "session_name", "default") or "default"
+    writeups_dir = Path("sessions") / session_name / "writeups"
+    if not writeups_dir.exists():
+        return web.json_response({"text": None, "path": None})
+
+    import re
+    slug = re.sub(r"[^a-z0-9]+", "-", chal.lower()).strip("-") or "challenge"
+    candidates = sorted(
+        writeups_dir.glob(f"{slug}-*.md"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        return web.json_response({"text": None, "path": None})
+    path = candidates[0]
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as e:
+        return web.json_response({"text": None, "path": str(path),
+                                  "error": str(e)})
+    return web.json_response({"text": text, "path": str(path)})
+
+
 async def _logs(request: web.Request) -> web.Response:
     """Tail the JSONL tracer file for one solver."""
     chal = request.match_info["chal"]
@@ -1127,6 +1225,7 @@ def build_app(deps: Any, run_id: str) -> web.Application:
     app.router.add_get("/api/status", _status)
     app.router.add_get("/api/events", _events)
     app.router.add_get("/api/logs/{chal}/{model}", _logs)
+    app.router.add_get("/api/writeup/{chal}", _writeup)
     app.router.add_post("/api/msg", _msg)
     app.router.add_post("/api/swarms/{chal}/kill", _kill_swarm)
     app.router.add_post("/api/spawn", _spawn)
