@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import contextlib
 import logging
 from collections.abc import Callable, Coroutine
 from pathlib import Path
@@ -93,10 +93,20 @@ async def run_event_loop(
     poller = CTFdPoller(ctfd=ctfd, interval_s=5.0)
     await poller.start()
 
-    # Start operator message HTTP endpoint
-    msg_server = await _start_msg_server(deps.operator_inbox, deps.msg_port)
-
+    # Live web dashboard. Replaces the previous hand-rolled HTTP server,
+    # but keeps /msg backward compat so the existing ctf-msg CLI still works.
     from backend.sandbox import RUN_ID
+    from backend.web import start_dashboard
+    try:
+        dash_runner, dash_port = await start_dashboard(
+            deps, RUN_ID, port=deps.msg_port
+        )
+        deps.event_hub = dash_runner.app["hub"]
+    except OSError as e:
+        logger.warning("Could not start dashboard: %s", e)
+        dash_runner = None
+        deps.event_hub = None
+
     logger.info(
         "Coordinator starting (run %s): %d models, %d challenges, %d solved",
         RUN_ID,
@@ -104,6 +114,8 @@ async def run_event_loop(
         len(poller.known_challenges),
         len(poller.known_solved),
     )
+    if dash_runner is not None:
+        logger.info("Dashboard:  http://127.0.0.1:%d/", dash_port)
 
     unsolved = poller.known_challenges - poller.known_solved
     initial_msg = (
@@ -140,15 +152,30 @@ async def run_event_loop(
             for evt in events:
                 if evt.kind == "new_challenge":
                     parts.append(f"NEW CHALLENGE: '{evt.challenge_name}' appeared. Spawn a swarm.")
+                    if deps.event_hub:
+                        deps.event_hub.broadcast(
+                            "new_challenge", challenge=evt.challenge_name,
+                            text=f"new challenge: {evt.challenge_name}",
+                        )
                     # Auto-spawn for new challenges
                     await _auto_spawn_one(deps, evt.challenge_name)
                 elif evt.kind == "challenge_solved":
                     parts.append(f"SOLVED: '{evt.challenge_name}' — swarm auto-killed.")
+                    if deps.event_hub:
+                        deps.event_hub.broadcast(
+                            "challenge_correct", challenge=evt.challenge_name,
+                            text=f"correct: {evt.challenge_name}",
+                        )
 
             # Detect finished swarms
             for name, task in list(deps.swarm_tasks.items()):
                 if task.done():
                     parts.append(f"SOLVER FINISHED: Swarm for '{name}' completed. Check results or retry.")
+                    if deps.event_hub:
+                        deps.event_hub.broadcast(
+                            "swarm_finished", challenge=name,
+                            text=f"swarm finished: {name}",
+                        )
                     deps.swarm_tasks.pop(name, None)
 
             # Drain solver-to-coordinator messages
@@ -195,9 +222,9 @@ async def run_event_loop(
     except Exception as e:
         logger.error("Coordinator fatal: %s", e, exc_info=True)
     finally:
-        if msg_server:
-            msg_server.close()
-            await msg_server.wait_closed()
+        if dash_runner is not None:
+            with contextlib.suppress(Exception):
+                await dash_runner.cleanup()
         await poller.stop()
         for swarm in deps.swarms.values():
             swarm.kill()
@@ -251,51 +278,3 @@ async def _auto_spawn_unsolved(deps: CoordinatorDeps, poller) -> None:
         await _auto_spawn_one(deps, name)
 
 
-async def _start_msg_server(inbox: asyncio.Queue, port: int = 0) -> asyncio.Server | None:
-    """Start a tiny HTTP server that accepts operator messages via POST."""
-
-    async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        try:
-            # Read HTTP request
-            request_line = await asyncio.wait_for(reader.readline(), timeout=5)
-            headers: dict[str, str] = {}
-            while True:
-                line = await asyncio.wait_for(reader.readline(), timeout=5)
-                if line in (b"\r\n", b"\n", b""):
-                    break
-                if b":" in line:
-                    k, v = line.decode().split(":", 1)
-                    headers[k.strip().lower()] = v.strip()
-
-            method = request_line.decode().split()[0] if request_line else ""
-            content_length = int(headers.get("content-length", 0))
-
-            if method == "POST" and content_length > 0:
-                body = await asyncio.wait_for(reader.read(content_length), timeout=5)
-                try:
-                    data = json.loads(body)
-                    message = data.get("message", body.decode())
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    message = body.decode("utf-8", errors="replace")
-
-                inbox.put_nowait(message)
-                resp = json.dumps({"ok": True, "queued": message[:200]})
-                writer.write(f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(resp)}\r\n\r\n{resp}".encode())
-            else:
-                resp = json.dumps({"error": "POST with JSON body required", "usage": "POST {\"message\": \"...\"}"})
-                writer.write(f"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {len(resp)}\r\n\r\n{resp}".encode())
-
-            await writer.drain()
-        except Exception:
-            pass
-        finally:
-            writer.close()
-
-    try:
-        server = await asyncio.start_server(_handle, "127.0.0.1", port)
-        actual_port = server.sockets[0].getsockname()[1]
-        logger.info(f"Operator message endpoint listening on http://127.0.0.1:{actual_port}")
-        return server
-    except OSError as e:
-        logger.warning(f"Could not start operator message endpoint: {e}")
-        return None

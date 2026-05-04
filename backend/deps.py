@@ -60,4 +60,10 @@ class CoordinatorDeps:
     swarm_tasks: dict[str, asyncio.Task] = field(default_factory=dict)
     results: dict[str, dict] = field(default_factory=dict)
     challenge_dirs: dict[str, str] = field(default_factory=dict)
+    # Web dashboard EventHub — populated by coordinator_loop.run_event_loop
+    # when the dashboard server starts. None when the dashboard is not
+    # running (port bind failure, or the single-challenge cli path that
+    # doesn't run a coordinator). Use deps.event_hub.broadcast(kind, ...)
+    # to push live events into the SSE stream.
+    event_hub: Any = None
     challenge_metas: dict[str, Any] = field(default_factory=dict)
