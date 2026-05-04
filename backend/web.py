@@ -50,6 +50,9 @@ INDEX_HTML = """<!doctype html>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- marked.js for rendering writeup markdown. CDN-fetched; the JS code
+     below falls back to plain <pre> if the script doesn't load. -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
 /*
  * Material Design 3 dark theme.
@@ -337,6 +340,121 @@ pre.log {
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--md-sys-color-on-surface);
+}
+
+/* Structured trace renderer (parses each JSONL line into a row) */
+.trace {
+  display: flex; flex-direction: column;
+  background: var(--md-sys-color-surface-container-lowest);
+  border-radius: var(--md-shape-sm);
+  padding: 8px;
+  max-height: 360px;
+  overflow: auto;
+}
+.trace-row {
+  display: grid;
+  grid-template-columns: 64px 96px 1fr;
+  gap: 10px;
+  padding: 6px 8px;
+  align-items: baseline;
+  border-radius: var(--md-shape-xs);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.trace-row:hover { background: rgba(208,188,255,.05); }
+.trace-row + .trace-row { border-top: 1px solid var(--md-sys-color-outline-variant); }
+.trace-time {
+  font-family: "Roboto Mono", monospace; font-size: 11px;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.trace-tag {
+  font-family: "Roboto Mono", monospace; font-size: 11px;
+  font-weight: 500;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.trace-tag.start  { color: var(--md-sys-color-primary); }
+.trace-tag.call   { color: var(--md-info); }
+.trace-tag.result { color: var(--md-success); }
+.trace-tag.usage  { color: var(--md-warning); }
+.trace-tag.error  { color: var(--md-sys-color-error); }
+.trace-step {
+  font-family: "Roboto Mono", monospace;
+  color: var(--md-sys-color-outline); font-size: 10px; margin-left: 6px;
+}
+.trace-body {
+  font-family: "Roboto Mono", monospace; margin: 0;
+  white-space: pre-wrap; word-break: break-word;
+  color: var(--md-sys-color-on-surface);
+}
+.trace-body.code {
+  background: var(--md-sys-color-surface-container);
+  border-radius: var(--md-shape-xs);
+  padding: 6px 8px; max-height: 200px; overflow: auto;
+}
+.trace-body .more {
+  color: var(--md-sys-color-on-surface-variant); font-style: italic;
+}
+
+/* Markdown-rendered writeup */
+.writeup {
+  padding: 20px 24px;
+  background: var(--md-sys-color-surface-container-lowest);
+  border-radius: var(--md-shape-sm);
+  max-height: 540px; overflow: auto;
+  color: var(--md-sys-color-on-surface);
+  font-size: 14px; line-height: 1.6;
+}
+.writeup .path {
+  color: var(--md-sys-color-on-surface-variant); font-size: 11px;
+  font-family: "Roboto Mono", monospace; margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+.writeup-content h1, .writeup-content h2,
+.writeup-content h3, .writeup-content h4 {
+  color: var(--md-sys-color-on-surface);
+  margin-top: 24px; margin-bottom: 8px; font-weight: 500;
+}
+.writeup-content h1 { font-size: 22px; }
+.writeup-content h2 { font-size: 18px; color: var(--md-sys-color-primary); }
+.writeup-content h3 { font-size: 15px; }
+.writeup-content h4 { font-size: 14px; color: var(--md-sys-color-on-surface-variant); }
+.writeup-content p  { margin: 8px 0 12px; }
+.writeup-content code {
+  background: var(--md-sys-color-surface-container);
+  padding: 2px 6px; border-radius: 4px;
+  font-family: "Roboto Mono", monospace; font-size: 12.5px;
+}
+.writeup-content pre {
+  background: var(--md-sys-color-surface-container);
+  border-radius: 6px; padding: 12px;
+  overflow: auto; margin: 12px 0;
+  font-family: "Roboto Mono", monospace; font-size: 12px; line-height: 1.5;
+}
+.writeup-content pre code { background: transparent; padding: 0; }
+.writeup-content ul, .writeup-content ol { padding-left: 24px; margin: 8px 0 12px; }
+.writeup-content li { margin: 4px 0; }
+.writeup-content blockquote {
+  border-left: 3px solid var(--md-sys-color-outline);
+  padding-left: 12px; margin: 12px 0;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.writeup-content table {
+  border-collapse: collapse; margin: 12px 0;
+  font-size: 13px;
+}
+.writeup-content th, .writeup-content td {
+  border: 1px solid var(--md-sys-color-outline-variant);
+  padding: 6px 10px; text-align: left;
+}
+.writeup-content th { background: var(--md-sys-color-surface-container); }
+.writeup-content a {
+  color: var(--md-info); text-decoration: none;
+}
+.writeup-content a:hover { text-decoration: underline; }
+.writeup-content hr {
+  border: none; border-top: 1px solid var(--md-sys-color-outline-variant);
+  margin: 18px 0;
 }
 
 .empty {
@@ -797,11 +915,14 @@ function renderDetail(challenges) {
         </td>
       </tr>`;
       if (isOpen) {
-        // Use a data attribute keyed by (chal,model) instead of an HTML id —
-        // model specs contain slashes which complicate id-based lookup, and
-        // the U+241F sentinel doesn't survive CSS.escape -> getElementById.
+        // The host div gets replaced with a structured trace timeline by
+        // fetchLogInto(); data attrs let the fetch find the right slot.
         html += `<tr class="log-row">
-          <td colspan="5"><pre class="log" data-chal="${escapeHTML(c.challenge)}" data-model="${escapeHTML(sv.model)}">loading…</pre></td>
+          <td colspan="5">
+            <div data-trace-host data-chal="${escapeHTML(c.challenge)}" data-model="${escapeHTML(sv.model)}">
+              <div class="empty-detail" style="padding:12px">loading…</div>
+            </div>
+          </td>
         </tr>`;
       }
     }
@@ -863,12 +984,21 @@ async function toggleWriteup(nameEnc) {
     const r = await fetch('/api/writeup/' + nameEnc);
     const d = await r.json();
     if (d.text) {
+      // Render markdown with marked if it loaded; fall back to <pre> if
+      // the CDN was blocked (preserve readability either way).
+      let body;
+      if (typeof marked !== 'undefined' && marked.parse) {
+        try {
+          marked.setOptions({ breaks: true, gfm: true });
+        } catch {}
+        body = `<div class="writeup-content">${marked.parse(d.text)}</div>`;
+      } else {
+        body = `<pre class="log" style="max-height:480px">${escapeHTML(d.text)}</pre>`;
+      }
       const safePath = escapeHTML(d.path || '');
-      el.innerHTML = `<div style="padding:16px 20px">
-        <div class="meta" style="margin-bottom:8px;color:var(--md-sys-color-on-surface-variant);font-size:12px">
-          ${safePath}
-        </div>
-        <pre class="log" style="max-height:480px">${escapeHTML(d.text)}</pre>
+      el.innerHTML = `<div class="writeup">
+        <div class="path">${safePath}</div>
+        ${body}
       </div>`;
     } else {
       el.innerHTML = '<div class="empty-detail">No writeup found yet — '
@@ -929,12 +1059,100 @@ async function fetchLogInto(k) {
   const r = await fetch(
     `/api/logs/${encodeURIComponent(chal)}/${encodeURIComponent(model)}?tail=80`);
   const data = await r.json();
-  // Find the <pre> by data attributes instead of by id — robust against
-  // slashes in model specs and the U+241F sentinel.
-  const el = detailHostEl.querySelector(
-    `pre.log[data-chal="${CSS.escape(chal)}"][data-model="${CSS.escape(model)}"]`
+  const host = detailHostEl.querySelector(
+    `[data-trace-host][data-chal="${CSS.escape(chal)}"][data-model="${CSS.escape(model)}"]`
   );
-  if (el) el.textContent = data.lines.join('\\n') || '(no log yet — solver may still be starting)';
+  if (!host) return;
+  if (!data.lines || !data.lines.length) {
+    host.innerHTML = '<div class="empty-detail" style="padding:12px">'
+      + '(no log yet — solver may still be starting)</div>';
+    return;
+  }
+  host.innerHTML = renderTrace(data.lines);
+  // Auto-scroll to the latest event so the operator sees what just happened.
+  const traceEl = host.querySelector('.trace');
+  if (traceEl) traceEl.scrollTop = traceEl.scrollHeight;
+}
+
+// Parse a JSONL trace into a structured timeline. Each line is a single
+// event with a `type` discriminator — render based on that. Falls back
+// to plain text for any line we can't parse.
+function renderTrace(lines) {
+  const rows = lines.map(l => {
+    try { return JSON.parse(l); } catch { return {raw: l}; }
+  });
+  let html = '<div class="trace">';
+  for (const e of rows) {
+    if (e.raw !== undefined) {
+      html += `<div class="trace-row"><span class="trace-time"></span>
+        <span class="trace-tag">raw</span>
+        <pre class="trace-body">${escapeHTML(e.raw)}</pre></div>`;
+      continue;
+    }
+    const t = e.ts ? new Date(e.ts * 1000).toLocaleTimeString() : '';
+    const step = (e.step !== undefined && e.step !== null)
+      ? `<span class="trace-step">#${e.step}</span>` : '';
+    if (e.type === 'start') {
+      html += `<div class="trace-row">
+        <span class="trace-time">${escapeHTML(t)}</span>
+        <span class="trace-tag start">▶ start</span>
+        <span class="trace-body"><b>${escapeHTML(e.challenge||'')}</b>
+          · ${escapeHTML(e.model||'')}</span>
+      </div>`;
+    } else if (e.type === 'tool_call') {
+      let argsObj = e.args;
+      if (typeof argsObj === 'string') {
+        try { argsObj = JSON.parse(argsObj); } catch {}
+      }
+      let summary = '';
+      if (argsObj && typeof argsObj === 'object') {
+        summary = argsObj.command || argsObj.path || argsObj.url
+          || argsObj.code || argsObj.query || JSON.stringify(argsObj, null, 2);
+      } else {
+        summary = String(argsObj || '');
+      }
+      const tooLong = summary.length > 600;
+      const shown = tooLong ? summary.slice(0, 600) + '\\n…[+' + (summary.length - 600) + ' chars]' : summary;
+      html += `<div class="trace-row">
+        <span class="trace-time">${escapeHTML(t)}</span>
+        <span class="trace-tag call">→ ${escapeHTML(e.tool || '')}${step}</span>
+        <pre class="trace-body code">${escapeHTML(shown)}</pre>
+      </div>`;
+    } else if (e.type === 'tool_result') {
+      let body = e.result;
+      if (typeof body !== 'string') body = JSON.stringify(body, null, 2);
+      const tooLong = body.length > 800;
+      const shown = tooLong ? body.slice(0, 800) + '\\n…[+' + (body.length - 800) + ' bytes]' : body;
+      html += `<div class="trace-row">
+        <span class="trace-time">${escapeHTML(t)}</span>
+        <span class="trace-tag result">← ${escapeHTML(e.tool || '')}${step}</span>
+        <pre class="trace-body code">${escapeHTML(shown)}</pre>
+      </div>`;
+    } else if (e.type === 'usage') {
+      const ic = e.input_tokens || 0, oc = e.output_tokens || 0;
+      const cc = e.cache_read_tokens || 0;
+      const cost = (e.cost_usd || 0).toFixed(4);
+      html += `<div class="trace-row">
+        <span class="trace-time">${escapeHTML(t)}</span>
+        <span class="trace-tag usage">$ usage</span>
+        <span class="trace-body">in:${ic} cached:${cc} out:${oc} · $${cost}</span>
+      </div>`;
+    } else if (e.type === 'error' || (e.type && e.type.includes('error'))) {
+      html += `<div class="trace-row">
+        <span class="trace-time">${escapeHTML(t)}</span>
+        <span class="trace-tag error">! ${escapeHTML(e.type)}${step}</span>
+        <pre class="trace-body">${escapeHTML(JSON.stringify(e, null, 2))}</pre>
+      </div>`;
+    } else {
+      html += `<div class="trace-row">
+        <span class="trace-time">${escapeHTML(t)}</span>
+        <span class="trace-tag">${escapeHTML(e.type || '?')}${step}</span>
+        <pre class="trace-body">${escapeHTML(JSON.stringify(e, null, 2))}</pre>
+      </div>`;
+    }
+  }
+  html += '</div>';
+  return html;
 }
 
 let latestStatus = null;
