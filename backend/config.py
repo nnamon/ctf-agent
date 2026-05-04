@@ -94,6 +94,15 @@ class Settings(BaseSettings):
     # "pwncollege" when backend_kind is "pwncollege".
     exec_envs: list[str] = []
 
+    # ── Challenge skip-list ──
+    # Glob patterns matched against challenge names. Anything matching
+    # any pattern is filtered out of the coordinator's unsolved list and
+    # rejected if explicitly spawned. Set per session (e.g. for
+    # pwn.college's `linux-luminarium/destruction/*` challenges that
+    # deliberately wipe the workspace and can't be recovered without a
+    # tool the solver doesn't have). fnmatch syntax: *, ?, [seq].
+    skip_challenges: list[str] = []
+
     # Orchestration primitives — populated by --context / --preserve-workspace
     # CLI flags. An external orchestrator (e.g. another agent invoking
     # ctf-solve repeatedly) uses these to pass artifacts between chained

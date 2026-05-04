@@ -145,7 +145,11 @@ async def run_event_loop(
                 "before exposing to untrusted networks."
             )
 
-    unsolved = poller.known_challenges - poller.known_solved
+    from backend.agents.coordinator_core import _is_skipped
+    unsolved = {
+        n for n in (poller.known_challenges - poller.known_solved)
+        if not _is_skipped(deps, n)
+    }
     initial_msg = (
         f"CTF is LIVE. {len(poller.known_challenges)} challenges, "
         f"{len(poller.known_solved)} solved.\n"
@@ -227,9 +231,13 @@ async def run_event_loop(
             now = asyncio.get_event_loop().time()
             if now - last_status >= status_interval:
                 last_status = now
+                from backend.agents.coordinator_core import _is_skipped
                 active = [n for n, t in deps.swarm_tasks.items() if not t.done()]
                 solved_set = poller.known_solved
-                unsolved_set = poller.known_challenges - solved_set
+                unsolved_set = {
+                    n for n in (poller.known_challenges - solved_set)
+                    if not _is_skipped(deps, n)
+                }
                 status_line = (
                     f"STATUS: {len(solved_set)} solved, {len(unsolved_set)} unsolved, "
                     f"{len(active)} active swarms. Cost: ${cost_tracker.total_cost_usd:.2f}"
@@ -301,7 +309,11 @@ async def _auto_spawn_one(deps: CoordinatorDeps, challenge_name: str) -> None:
 
 async def _auto_spawn_unsolved(deps: CoordinatorDeps, poller) -> None:
     """Auto-spawn swarms for all unsolved challenges that don't have active swarms."""
-    unsolved = poller.known_challenges - poller.known_solved
+    from backend.agents.coordinator_core import _is_skipped
+    unsolved = {
+        n for n in (poller.known_challenges - poller.known_solved)
+        if not _is_skipped(deps, n)
+    }
     for name in sorted(unsolved):
         await _auto_spawn_one(deps, name)
 

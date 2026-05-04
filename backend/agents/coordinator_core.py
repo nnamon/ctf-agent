@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import json
 import logging
 import time
@@ -14,6 +15,20 @@ from backend.prompts import ChallengeMeta
 from backend.solver_base import FLAG_FOUND
 
 logger = logging.getLogger(__name__)
+
+
+def _is_skipped(deps: CoordinatorDeps, challenge_name: str) -> bool:
+    """True if `challenge_name` matches any glob in settings.skip_challenges.
+
+    The skip-list filters out challenges the coordinator should never
+    attempt — e.g. pwn.college's `linux-luminarium/destruction/*` slugs
+    that deliberately wipe the workspace and are unrecoverable without
+    a workspace-reset tool the solver doesn't have.
+    """
+    patterns = list(getattr(deps.settings, "skip_challenges", []) or [])
+    if not patterns:
+        return False
+    return any(fnmatch.fnmatchcase(challenge_name, pat) for pat in patterns)
 
 
 def _bind_challenge_to_envs(registry: EnvRegistry, meta: ChallengeMeta) -> None:
@@ -52,17 +67,32 @@ async def do_fetch_challenges(deps: CoordinatorDeps) -> str:
             "description": (ch.get("description") or "")[:200],
         }
         for ch in challenges
+        if not _is_skipped(deps, ch.get("name", ""))
     ]
     return json.dumps(result, indent=2)
 
 
 async def do_get_solve_status(deps: CoordinatorDeps) -> str:
     solved = await deps.ctfd.fetch_solved_names()
-    swarm_status = {name: swarm.get_status() for name, swarm in deps.swarms.items()}
+    swarm_status = {
+        name: swarm.get_status()
+        for name, swarm in deps.swarms.items()
+        if not _is_skipped(deps, name)
+    }
     return json.dumps({"solved": sorted(solved), "active_swarms": swarm_status}, indent=2)
 
 
 async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
+    # Skip-list guard. Glob-matched names in settings.skip_challenges
+    # (e.g. `*/destruction/*`) get rejected here so the coordinator
+    # can't accidentally retry them after we've decided they're
+    # unsolvable on this backend.
+    if _is_skipped(deps, challenge_name):
+        return (
+            f"Skipped: {challenge_name!r} matches a skip_challenges "
+            "pattern. Pick a different challenge."
+        )
+
     # Retire finished swarm_tasks (free their resources), but keep the
     # ChallengeSwarm objects in deps.swarms so the dashboard can still
     # display the solver list, flags, log paths, and writeup link for
