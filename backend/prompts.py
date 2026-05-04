@@ -61,6 +61,7 @@ def build_prompt(
     container_arch: str = "unknown",
     has_named_tools: bool = True,
     prior_attempts: list | None = None,
+    context_files: list[str] | None = None,
 ) -> str:
     """Build the system prompt.
 
@@ -72,6 +73,13 @@ def build_prompt(
     `Backend.previous_attempts(name)`) — when provided, an
     "ALREADY-REJECTED FLAGS" section is rendered so the model doesn't
     re-propose flags that have already been submitted and rejected.
+
+    context_files: optional list of host-side paths supplied by an external
+    orchestrator (e.g. writeups + artifacts from prior chain-siblings).
+    Each is mounted in the sandbox at /challenge/context/<basename>; this
+    function additionally renders text-ish ones inline as a "## Prior
+    context" section so the model knows what's there without having to cat
+    every file.
     """
     conn_info = _rewrite_connection_info(meta.connection_info.strip())
 
@@ -128,6 +136,48 @@ def build_prompt(
                 suffix = ""
             lines.append(f"- `/challenge/distfiles/{name}`{suffix}")
         lines.append("")
+
+    # Orchestrator-supplied context (writeups, artifacts from prior siblings).
+    # Each file is bind-mounted at /challenge/context/<basename>. Embed a
+    # listing so the model knows what's there. For small text-ish files,
+    # also embed the contents inline so the model doesn't have to cat them.
+    if context_files:
+        TEXT_EMBED_LIMIT = 32 * 1024
+        TEXT_EXTS = {".md", ".txt", ".log", ".json", ".yml", ".yaml",
+                     ".csv", ".py", ".sh", ".c", ".h", ".cpp", ".java",
+                     ".rb", ".rs", ".go", ".js", ".ts", ".sql", ".html",
+                     ".xml", ".toml", ".ini", ".conf", ".cfg", ""}
+        lines.append("## Prior context")
+        lines.append("")
+        lines.append("Files attached by the orchestrator from prior chain-siblings.")
+        lines.append("All are also at `/challenge/context/<basename>` in the sandbox.")
+        lines.append("")
+        embedded: list[tuple[str, str]] = []
+        for src in context_files:
+            p = Path(src)
+            name = p.name
+            if not p.exists():
+                lines.append(f"- `/challenge/context/{name}` (missing on host)")
+                continue
+            size = p.stat().st_size
+            ext = p.suffix.lower()
+            if ext in TEXT_EXTS and size <= TEXT_EMBED_LIMIT:
+                try:
+                    body = p.read_text(encoding="utf-8")
+                    embedded.append((name, body))
+                    lines.append(f"- `/challenge/context/{name}`  ({size} B, embedded below)")
+                    continue
+                except UnicodeDecodeError:
+                    pass
+            kind = "binary" if ext not in TEXT_EXTS else "text"
+            lines.append(f"- `/challenge/context/{name}`  ({size} B, {kind}; not embedded)")
+        lines.append("")
+        for name, body in embedded:
+            lines.append(f"### `/challenge/context/{name}`")
+            lines.append("```")
+            lines.append(body.rstrip())
+            lines.append("```")
+            lines.append("")
 
     visible_hints = [h for h in meta.hints if h.get("content")]
     if visible_hints:

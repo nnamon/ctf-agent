@@ -40,4 +40,17 @@ class Settings(BaseSettings):
     ctfd_session_cookie: str = ""
     ctfd_csrf_token: str = ""  # optional pre-extracted nonce; bound to the cookie
 
+    # Orchestration primitives — populated by --context / --preserve-workspace
+    # CLI flags. An external orchestrator (e.g. another agent invoking
+    # ctf-solve repeatedly) uses these to pass artifacts between chained
+    # challenges.
+    #   context_files: paths to host-side files mounted read-only at
+    #                  /challenge/context/<basename> in every solver sandbox.
+    #                  Text-ish ones are also embedded in the system prompt.
+    #   preserve_workspace_to: if set, each solver copies its workspace to
+    #                  <this>/<model_spec>/ before tearing down. Used by the
+    #                  orchestrator to pull artifacts back out after a solve.
+    context_files: list[str] = []
+    preserve_workspace_to: str = ""
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}

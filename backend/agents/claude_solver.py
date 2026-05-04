@@ -66,10 +66,10 @@ class ClaudeSolver:
         self.message_bus = message_bus
         self.notify_coordinator = notify_coordinator
 
-        self.sandbox = DockerSandbox(
-            image=getattr(settings, "sandbox_image", "ctf-sandbox"),
+        self.sandbox = DockerSandbox.from_settings(
             challenge_dir=challenge_dir,
-            memory_limit=getattr(settings, "container_memory_limit", "4g"),
+            settings=settings,
+            model_spec=model_spec,
         )
         self.loop_detector = LoopDetector()
         self.tracer = SolverTracer(meta.name, self.model_id)
@@ -103,9 +103,10 @@ class ClaudeSolver:
             "submit_flag 'FLAG' to submit. notify_coordinator 'MSG' to message the coordinator.\n\n"
         )
         prior = self.ctfd.previous_attempts(self.meta.name)
+        ctx_files = list(getattr(self.settings, "context_files", []) or [])
         system_prompt = sandbox_preamble + build_prompt(
             self.meta, distfile_names, container_arch=container_arch,
-            has_named_tools=False, prior_attempts=prior,
+            has_named_tools=False, prior_attempts=prior, context_files=ctx_files,
         )
 
         # PreToolUse hook: rewrite Bash commands to run in the sandbox container.

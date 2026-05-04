@@ -53,10 +53,19 @@ CREATE TABLE IF NOT EXISTS attempts (
     flag            TEXT NOT NULL,
     status          TEXT NOT NULL,
     message         TEXT,
-    ts              INTEGER NOT NULL
+    ts              INTEGER NOT NULL,
+    writeup_path    TEXT,
+    workspace_path  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_lookup ON attempts(backend_id, challenge_name);
 """
+
+# Forward-compat: when an existing DB pre-dates the writeup/workspace columns,
+# add them in place so older logs keep working without manual migration.
+_MIGRATIONS = (
+    "ALTER TABLE attempts ADD COLUMN writeup_path TEXT",
+    "ALTER TABLE attempts ADD COLUMN workspace_path TEXT",
+)
 
 
 @dataclass
@@ -87,6 +96,14 @@ class AttemptLogBackend(Backend):
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            # Apply forward-compat ALTERs for older DBs. Each may fail with
+            # "duplicate column name" if the column already exists — that's
+            # the expected no-op path on fresh DBs and on already-migrated DBs.
+            for stmt in _MIGRATIONS:
+                try:
+                    conn.execute(stmt)
+                except sqlite3.OperationalError:
+                    pass
 
     def _log(self, name: str, flag: str, result: SubmitResult) -> None:
         with self._connect() as conn:
@@ -94,6 +111,35 @@ class AttemptLogBackend(Backend):
                 "INSERT INTO attempts(backend_id, challenge_name, flag, status, message, ts)"
                 " VALUES (?, ?, ?, ?, ?, ?)",
                 (self.backend_id, name, flag, result.status, result.message, int(time.time())),
+            )
+
+    def set_writeup_path(self, name: str, flag: str, path: str) -> None:
+        """Attach a writeup path to the most recent successful attempt.
+
+        Called by the postmortem step after the writeup file is generated.
+        Matches on (backend_id, challenge_name, flag, status='correct')
+        and updates the latest such row.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE attempts SET writeup_path = ? "
+                " WHERE id = (SELECT id FROM attempts "
+                "             WHERE backend_id = ? AND challenge_name = ? "
+                "               AND flag = ? AND status IN ('correct','already_solved') "
+                "             ORDER BY ts DESC LIMIT 1)",
+                (path, self.backend_id, name, flag),
+            )
+
+    def set_workspace_path(self, name: str, flag: str, path: str) -> None:
+        """Attach a preserved-workspace path to the most recent successful attempt."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE attempts SET workspace_path = ? "
+                " WHERE id = (SELECT id FROM attempts "
+                "             WHERE backend_id = ? AND challenge_name = ? "
+                "               AND flag = ? AND status IN ('correct','already_solved') "
+                "             ORDER BY ts DESC LIMIT 1)",
+                (path, self.backend_id, name, flag),
             )
 
     # ---- public Backend API ----

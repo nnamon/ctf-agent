@@ -152,10 +152,10 @@ class CodexSolver:
         self.no_submit = no_submit
         self.submit_fn = submit_fn
 
-        self.sandbox = DockerSandbox(
-            image=getattr(settings, "sandbox_image", "ctf-sandbox"),
+        self.sandbox = DockerSandbox.from_settings(
             challenge_dir=challenge_dir,
-            memory_limit=getattr(settings, "container_memory_limit", "4g"),
+            settings=settings,
+            model_spec=model_spec,
         )
         self.use_vision = supports_vision(model_spec)
         self.loop_detector = LoopDetector()
@@ -185,9 +185,10 @@ class CodexSolver:
 
         distfile_names = list_distfiles(self.challenge_dir)
         prior = self.ctfd.previous_attempts(self.meta.name)
+        ctx_files = list(getattr(self.settings, "context_files", []) or [])
         system_prompt = build_prompt(
             self.meta, distfile_names, container_arch=container_arch,
-            has_named_tools=True, prior_attempts=prior,
+            has_named_tools=True, prior_attempts=prior, context_files=ctx_files,
         )
 
         self._proc = await asyncio.create_subprocess_exec(

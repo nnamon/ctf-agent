@@ -52,6 +52,18 @@ def _setup_logging(verbose: bool = False) -> None:
               help="SQLite file persisting flag attempts; used to short-circuit duplicate-rejected flags and inject 'already-rejected' history into prompts.")
 @click.option("--no-attempt-log", is_flag=True,
               help="Disable persistent attempt logging (default: enabled).")
+@click.option("--context", "context_files", multiple=True, type=click.Path(),
+              help="Attach a file to the solver as prior-chain context. "
+                   "Mounted read-only at /challenge/context/<basename>; text-ish "
+                   "files (UTF-8, <32 KB) are also embedded in the system prompt. "
+                   "Repeatable. Used by an external orchestrator to chain "
+                   "challenges (e.g. pass writeups + binaries from prior solves).")
+@click.option("--preserve-workspace", "preserve_workspace", is_flag=True,
+              help="Save each solver's /challenge/workspace to "
+                   "runs/<RUN_ID>/<challenge_slug>/<model_spec>/workspace/ before "
+                   "shutdown. Lets an orchestrator pull artifacts the solver "
+                   "produced (unpacked binaries, decryption keys, intermediate "
+                   "scripts) and feed them to the next challenge via --context.")
 @click.option("-v", "--verbose", is_flag=True, help="Verbose logging")
 def main(
     ctfd_url: str | None,
@@ -71,6 +83,8 @@ def main(
     writeup_model: str,
     attempt_log_path: str,
     no_attempt_log: bool,
+    context_files: tuple[str, ...],
+    preserve_workspace: bool,
     verbose: bool,
 ) -> None:
     """CTF Agent — multi-model solver swarm.
@@ -90,6 +104,15 @@ def main(
         settings.ctfd_csrf_token = ctfd_csrf
     settings.max_concurrent_challenges = max_challenges
     settings.attempt_log_path = None if no_attempt_log else attempt_log_path
+
+    # Orchestration: --context FILE (repeatable) and --preserve-workspace.
+    # The preserve path is rooted at runs/<RUN_ID>/<challenge_slug>/, derived
+    # in _run_single once we know the slug. Here we just record the run-root.
+    settings.context_files = list(context_files)
+    if preserve_workspace:
+        from backend.sandbox import RUN_ID
+        # Slug filled in per-challenge inside _run_single.
+        settings.preserve_workspace_to = f"runs/{RUN_ID}"
 
     model_specs = list(models) if models else list(DEFAULT_MODELS)
 

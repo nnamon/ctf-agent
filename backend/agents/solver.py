@@ -129,10 +129,10 @@ class Solver:
         self.cancel_event = cancel_event or asyncio.Event()
         self._owns_sandbox = owns_sandbox if owns_sandbox is not None else (sandbox is None)
 
-        self.sandbox = sandbox or DockerSandbox(
-            image=getattr(settings, "sandbox_image", "ctf-sandbox"),
+        self.sandbox = sandbox or DockerSandbox.from_settings(
             challenge_dir=challenge_dir,
-            memory_limit=getattr(settings, "container_memory_limit", "4g"),
+            settings=settings,
+            model_spec=model_spec,
         )
         self.use_vision = supports_vision(model_spec)
         self.deps = SolverDeps(
@@ -169,11 +169,13 @@ class Solver:
 
         distfile_names = list_distfiles(self.challenge_dir)
         prior = self.ctfd.previous_attempts(self.meta.name)
+        ctx_files = list(getattr(self.settings, "context_files", []) or [])
         system_prompt = build_prompt(
             self.meta,
             distfile_names,
             container_arch=container_arch,
             prior_attempts=prior,
+            context_files=ctx_files,
         )
 
         model = resolve_model(self.model_spec, self.settings)

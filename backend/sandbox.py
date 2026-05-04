@@ -170,6 +170,13 @@ class DockerSandbox:
     challenge_dir: str
     memory_limit: str = "16g"
     workspace_dir: str = ""
+    # Files to bind-mount read-only at /challenge/context/<basename>. Used
+    # by an external orchestrator to pass artifacts (writeups, unpacked
+    # binaries, decryption keys) from prior chain-siblings to this solver.
+    context_files: list[str] = field(default_factory=list)
+    # If set, on stop() the workspace is copied here before rmtree. Lets
+    # an orchestrator collect artifacts the solver wrote during its run.
+    preserve_workspace_to: str = ""
     _container: Any = field(default=None, repr=False)
     _docker: Any = field(default=None, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -180,6 +187,40 @@ class DockerSandbox:
         if not self._container:
             raise RuntimeError("Sandbox not started")
         return self._container.id
+
+    @classmethod
+    def from_settings(
+        cls,
+        *,
+        challenge_dir: str,
+        settings: Any,
+        model_spec: str = "",
+    ) -> DockerSandbox:
+        """Build a sandbox from a Settings object, applying orchestration flags.
+
+        Picks up `context_files` and `preserve_workspace_to` from the settings
+        if present. The preserve path is composed as:
+            <preserve_root>/<challenge_slug>/<model_spec>/workspace
+        — challenge slug derives from the directory basename of challenge_dir,
+        and model_spec is appended so concurrent solvers don't trample each
+        other's workspace dumps.
+        """
+        preserve_root = getattr(settings, "preserve_workspace_to", "") or ""
+        preserve = ""
+        if preserve_root:
+            slug = Path(challenge_dir).name or "challenge"
+            parts = [preserve_root, slug]
+            if model_spec:
+                parts.append(model_spec)
+            parts.append("workspace")
+            preserve = str(Path(*parts))
+        return cls(
+            image=getattr(settings, "sandbox_image", "ctf-sandbox"),
+            challenge_dir=challenge_dir,
+            memory_limit=getattr(settings, "container_memory_limit", "4g"),
+            context_files=list(getattr(settings, "context_files", []) or []),
+            preserve_workspace_to=preserve,
+        )
 
     def _parse_memory_limit(self) -> int:
         s = self.memory_limit.strip().lower()
@@ -209,6 +250,16 @@ class DockerSandbox:
                 binds.append(f"{distfiles}:/challenge/distfiles:ro")
             if Path(meta_yml).exists():
                 binds.append(f"{meta_yml}:/challenge/metadata.yml:ro")
+            # Context files from prior siblings (orchestrator-supplied).
+            # Mounted read-only at /challenge/context/<basename>. Source paths
+            # are resolved to absolute so the bind doesn't depend on cwd.
+            for src in self.context_files:
+                src_abs = str(Path(src).resolve())
+                if Path(src_abs).exists():
+                    name = Path(src_abs).name
+                    binds.append(f"{src_abs}:/challenge/context/{name}:ro")
+                else:
+                    logger.warning("Context file missing, skipping: %s", src)
 
             config = {
                 "Image": self.image,
@@ -374,6 +425,20 @@ class DockerSandbox:
 
         if self.workspace_dir:
             import shutil
+            # Optionally copy the workspace to an external location before
+            # discarding it — the orchestrator uses this to pass artifacts
+            # (unpacked binaries, decrypted blobs, scripts the solver wrote)
+            # between chained challenges.
+            if self.preserve_workspace_to:
+                try:
+                    dest = Path(self.preserve_workspace_to)
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    if dest.exists():
+                        shutil.rmtree(dest, ignore_errors=True)
+                    shutil.copytree(self.workspace_dir, dest, dirs_exist_ok=True)
+                    logger.info("Workspace preserved to %s", dest)
+                except Exception as e:
+                    logger.warning("Workspace preservation failed: %s", e)
             try:
                 shutil.rmtree(self.workspace_dir, ignore_errors=True)
             except Exception:
