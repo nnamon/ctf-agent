@@ -17,10 +17,11 @@ from pydantic_ai.settings import ModelSettings
 if TYPE_CHECKING:
     from backend.config import Settings
 
-# Default model specs — claude-sdk and codex providers use the new solver backends
+# Default model specs — minimal lineup. Two codex models cover most of the
+# competitive range cheaply. Claude is opt-in via --models because it bills
+# subscription credits separately and not every operator has it set up.
+# Override with --models 'claude-sdk/claude-opus-4-7/medium,...' (repeatable).
 DEFAULT_MODELS: list[str] = [
-    "claude-sdk/claude-opus-4-7/medium",
-    "claude-sdk/claude-opus-4-7/max",
     "codex/gpt-5.5",
     "codex/gpt-5.5-mini",
 ]

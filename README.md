@@ -39,11 +39,10 @@ A **coordinator** LLM manages the competition while **solver swarms** attack ind
      | Swarm:          | | Swarm:         | | Swarm:         |
      | challenge-1     | | challenge-2    | | challenge-N    |
      |                 | |                | |                |
-     |  Opus 4.7 (med) | |  Opus 4.7 (med)| |                |
-     |  Opus 4.7 (max) | |  Opus 4.7 (max)| |     ...        |
      |  GPT-5.5        | |  GPT-5.5       | |                |
-     |  GPT-5.5-mini   | |  GPT-5.5-mini  | |                |
+     |  GPT-5.5-mini   | |  GPT-5.5-mini  | |     ...        |
      +--------+--------+ +--------+-------+ +----------------+
+       (Claude Opus 4.7 medium/max are opt-in via --models)
               |                    |
      +--------v--------+  +-------v--------+
      | Docker Sandbox  |  | Docker Sandbox |
@@ -92,12 +91,19 @@ uv run ctf-solve --coordinator claude ...
 
 Default model lineup (configurable in `backend/models.py`):
 
+**Default lineup:**
+
 | Model | Provider | Notes |
 |-------|----------|-------|
-| Claude Opus 4.7 (medium) | Claude SDK | Balanced speed/quality |
-| Claude Opus 4.7 (max) | Claude SDK | Deep reasoning |
 | GPT-5.5 | Codex | Best overall solver |
 | GPT-5.5-mini | Codex | Fast, good for easy challenges |
+
+**Opt-in (add with `--models`):**
+
+| Model | Provider | Notes |
+|-------|----------|-------|
+| Claude Opus 4.7 (medium) | Claude SDK | Balanced speed/quality. `claude-sdk/claude-opus-4-7/medium` |
+| Claude Opus 4.7 (max) | Claude SDK | Deep reasoning. `claude-sdk/claude-opus-4-7/max` |
 
 ## Sandbox Tooling
 
