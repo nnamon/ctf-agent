@@ -227,6 +227,7 @@ async def _run_single(
     console.print(f"[bold]Challenge:[/bold] {meta.name} ({meta.category}, {meta.value} pts)")
 
     ctfd = make_backend(
+        kind=getattr(settings, "backend_kind", None) or None,
         base_url=settings.ctfd_url,
         token=settings.ctfd_token,
         username=settings.ctfd_user,
@@ -235,8 +236,27 @@ async def _run_single(
         csrf_token=getattr(settings, "ctfd_csrf_token", ""),
         attempt_log_path=getattr(settings, "attempt_log_path", None),
         manual_confirm=getattr(settings, "manual_confirm", False),
+        pwncollege_dojos=getattr(settings, "pwncollege_dojos", []) or [],
     )
     cost_tracker = CostTracker()
+
+    # Build the multi-env registry. Same shape as the coordinator path —
+    # registers `local` per-solver via fork(), shares remote envs (pwn.
+    # college SSH master) here. For single-challenge runs the meta is
+    # already loaded, so we can bind the active challenge eagerly.
+    from backend.agents.coordinator_core import _bind_challenge_to_envs
+    from backend.exec_envs.builder import build_env_registry
+    from backend.session import SessionContext
+    sess = SessionContext.resolve(
+        explicit=getattr(settings, "session_name", None) or None
+    )
+    env_registry = build_env_registry(
+        settings=settings, session=sess, backend=ctfd, sandbox=None,
+    )
+    if env_registry.names:
+        _bind_challenge_to_envs(env_registry, meta)
+    else:
+        env_registry = None
 
     swarm = ChallengeSwarm(
         challenge_dir=str(challenge_path),
@@ -246,6 +266,7 @@ async def _run_single(
         settings=settings,
         model_specs=model_specs,
         no_submit=no_submit,
+        env_registry=env_registry,
     )
 
     t0 = time.monotonic()
