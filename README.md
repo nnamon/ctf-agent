@@ -81,11 +81,11 @@ uv run ctf-solve \
 ## Coordinator Backends
 
 ```bash
-# Claude SDK coordinator (default)
-uv run ctf-solve --coordinator claude ...
-
-# Codex coordinator (GPT-5.5 via JSON-RPC)
+# Codex coordinator (GPT-5.5 via JSON-RPC, default)
 uv run ctf-solve --coordinator codex ...
+
+# Claude SDK coordinator (Opus 4.7)
+uv run ctf-solve --coordinator claude ...
 ```
 
 ## Solver Models
