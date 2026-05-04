@@ -615,65 +615,115 @@ function groupByCategory(challenges) {
   return groups;
 }
 
-// Track the last-rendered board signature so we can skip full re-renders
-// when nothing visible has changed — eliminates the every-2s flicker
-// from SSE status pushes that don't actually update any tile.
-let lastBoardSig = "";
+// Targeted DOM updates: keep the rendered tile/category nodes alive
+// across SSE pushes and only update fields whose values changed.
+// Eliminates flicker — `innerHTML = ...` was repainting the whole board
+// even when only one tile's cost changed.
+const categoryCache = new Map();   // category -> { el, countEl, tilesEl }
+const tileCache     = new Map();   // challenge name -> { el, sig }
+let lastBoardEmpty  = null;        // null=unknown, true/false otherwise
+
+function chipClass(status) {
+  return status === 'running' ? 'run'
+       : status === 'killed'  ? 'killed'
+       : status === 'done'    ? 'done'
+       : '';
+}
 
 function renderBoard(challenges) {
   if (!challenges.length) {
-    if (lastBoardSig !== "EMPTY") {
+    if (lastBoardEmpty !== true) {
       boardEl.innerHTML =
         '<div class="card empty"><span class="icon">⚑</span>'
         + 'No challenges yet. Either ctf-pull hasn\\'t been run or CTFd hasn\\'t responded.</div>';
-      lastBoardSig = "EMPTY";
+      categoryCache.clear();
+      tileCache.clear();
+      lastBoardEmpty = true;
     }
     return;
   }
+  if (lastBoardEmpty !== false) {
+    boardEl.innerHTML = '';
+    lastBoardEmpty = false;
+  }
 
-  const groups = groupByCategory(challenges);
-  const cats = Array.from(groups.keys()).sort();
+  const groups   = groupByCategory(challenges);
+  const wantCats = new Set(groups.keys());
+  const wantNames = new Set(challenges.map(c => c.challenge));
 
-  // Build a signature that changes ONLY when something visible changes.
-  // Cost rounded to cents — sub-cent updates don't ever change the tile.
-  const sig = JSON.stringify({
-    sel: selected,
-    items: challenges.map(c => [
-      c.challenge, c.category, c.value, c.status, c.ctfd_solved,
-      Math.round(c.cost_usd * 100),
-    ]),
-  });
-  if (sig === lastBoardSig) return;
-  lastBoardSig = sig;
-
-  let html = '';
-  for (const cat of cats) {
+  for (const cat of Array.from(groups.keys()).sort()) {
     const arr = groups.get(cat);
+
+    let cc = categoryCache.get(cat);
+    if (!cc) {
+      const catEl = document.createElement('div');
+      catEl.className = 'category';
+      catEl.innerHTML =
+        '<div class="category-header"><h3></h3><span class="count"></span></div>'
+        + '<div class="tiles"></div>';
+      catEl.querySelector('h3').textContent = cat;
+      cc = {
+        el: catEl,
+        countEl: catEl.querySelector('.count'),
+        tilesEl: catEl.querySelector('.tiles'),
+      };
+      categoryCache.set(cat, cc);
+      boardEl.appendChild(catEl);
+    }
     const solvedCount = arr.filter(c => c.ctfd_solved).length;
-    html += `<div class="category">
-      <div class="category-header">
-        <h3>${escapeHTML(cat)}</h3>
-        <span class="count">${solvedCount}/${arr.length} solved</span>
-      </div>
-      <div class="tiles">`;
+    const newCount = `${solvedCount}/${arr.length} solved`;
+    if (cc.countEl.textContent !== newCount) cc.countEl.textContent = newCount;
+
     for (const c of arr) {
-      const cls = [
-        'tile',
+      const sig = [
+        c.value, c.status, c.ctfd_solved ? 1 : 0,
+        selected === c.challenge ? 1 : 0,
+        Math.round(c.cost_usd * 100),
+      ].join('|');
+
+      let tc = tileCache.get(c.challenge);
+      if (!tc) {
+        const tile = document.createElement('div');
+        tile.dataset.name = c.challenge;
+        // Click handler closes over `c.challenge` literally.
+        const clickName = c.challenge;
+        tile.addEventListener('click', () => selectChallenge(encodeURIComponent(clickName)));
+        tile.innerHTML =
+          '<div class="name"></div>'
+          + '<div class="value"><span class="num"></span><span class="value-suffix">pts</span></div>'
+          + '<div class="stats"><span class="stat-chip"></span><span class="cost"></span></div>';
+        tile.querySelector('.name').textContent = c.challenge;
+        tc = { el: tile, sig: '' };
+        tileCache.set(c.challenge, tc);
+      }
+      // Move into the right category if the row changed groups (rare).
+      if (tc.el.parentElement !== cc.tilesEl) cc.tilesEl.appendChild(tc.el);
+
+      if (tc.sig === sig) continue;
+      tc.sig = sig;
+
+      const tile = tc.el;
+      const cls = ['tile',
         c.ctfd_solved ? 'solved' : '',
         selected === c.challenge ? 'selected' : '',
       ].filter(Boolean).join(' ');
-      const stat = c.status === 'queued' && c.ctfd_solved ? '' : chip(c.status);
-      const cost = c.cost_usd > 0
-        ? `<span class="cost">${fmtUsd(c.cost_usd)}</span>` : '';
-      html += `<div class="${cls}" onclick="selectChallenge('${encodeURIComponent(c.challenge)}')">
-        <div class="name">${escapeHTML(c.challenge)}</div>
-        <div class="value">${c.value || 0}<span class="value-suffix">pts</span></div>
-        <div class="stats">${stat}${cost}</div>
-      </div>`;
+      if (tile.className !== cls) tile.className = cls;
+      tile.querySelector('.num').textContent = c.value || 0;
+      const showChip = !(c.status === 'queued' && c.ctfd_solved);
+      const chipEl = tile.querySelector('.stat-chip');
+      chipEl.className = 'chip stat-chip' + (chipClass(c.status) ? ' ' + chipClass(c.status) : '');
+      chipEl.textContent = showChip ? c.status : '';
+      tile.querySelector('.cost').textContent = c.cost_usd > 0 ? fmtUsd(c.cost_usd) : '';
     }
-    html += '</div></div>';
   }
-  boardEl.innerHTML = html;
+
+  // Drop tiles for challenges that disappeared (rare on a single CTF).
+  for (const [name, tc] of tileCache) {
+    if (!wantNames.has(name)) { tc.el.remove(); tileCache.delete(name); }
+  }
+  for (const [name, cc] of categoryCache) {
+    if (!wantCats.has(name)) { cc.el.remove(); categoryCache.delete(name); }
+  }
 }
 
 let lastDetailSig = "";
@@ -747,8 +797,11 @@ function renderDetail(challenges) {
         </td>
       </tr>`;
       if (isOpen) {
-        html += `<tr class="log-row" data-key="${escapeHTML(k)}">
-          <td colspan="5"><pre class="log" id="log-${escapeHTML(k)}">loading…</pre></td>
+        // Use a data attribute keyed by (chal,model) instead of an HTML id —
+        // model specs contain slashes which complicate id-based lookup, and
+        // the U+241F sentinel doesn't survive CSS.escape -> getElementById.
+        html += `<tr class="log-row">
+          <td colspan="5"><pre class="log" data-chal="${escapeHTML(c.challenge)}" data-model="${escapeHTML(sv.model)}">loading…</pre></td>
         </tr>`;
       }
     }
@@ -876,7 +929,11 @@ async function fetchLogInto(k) {
   const r = await fetch(
     `/api/logs/${encodeURIComponent(chal)}/${encodeURIComponent(model)}?tail=80`);
   const data = await r.json();
-  const el = document.getElementById('log-' + CSS.escape(k));
+  // Find the <pre> by data attributes instead of by id — robust against
+  // slashes in model specs and the U+241F sentinel.
+  const el = detailHostEl.querySelector(
+    `pre.log[data-chal="${CSS.escape(chal)}"][data-model="${CSS.escape(model)}"]`
+  );
   if (el) el.textContent = data.lines.join('\\n') || '(no log yet — solver may still be starting)';
 }
 

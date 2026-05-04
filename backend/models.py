@@ -23,7 +23,10 @@ if TYPE_CHECKING:
 # Override with --models 'claude-sdk/claude-opus-4-7/medium,...' (repeatable).
 DEFAULT_MODELS: list[str] = [
     "codex/gpt-5.5",
-    "codex/gpt-5.5-mini",
+    # gpt-5.4-mini instead of 5.5-mini for now — the latter has been hitting
+    # API errors mid-session. Swap back to 5.5-mini once the upstream issue
+    # is resolved.
+    "codex/gpt-5.4-mini",
 ]
 
 # Context window sizes (tokens). Older model entries kept for backward compat

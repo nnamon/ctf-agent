@@ -40,7 +40,7 @@ A **coordinator** LLM manages the competition while **solver swarms** attack ind
      | challenge-1     | | challenge-2    | | challenge-N    |
      |                 | |                | |                |
      |  GPT-5.5        | |  GPT-5.5       | |                |
-     |  GPT-5.5-mini   | |  GPT-5.5-mini  | |     ...        |
+     |  GPT-5.4-mini   | |  GPT-5.4-mini  | |     ...        |
      +--------+--------+ +--------+-------+ +----------------+
        (Claude Opus 4.7 medium/max are opt-in via --models)
               |                    |
@@ -96,7 +96,7 @@ Default model lineup (configurable in `backend/models.py`):
 | Model | Provider | Notes |
 |-------|----------|-------|
 | GPT-5.5 | Codex | Best overall solver |
-| GPT-5.5-mini | Codex | Fast, good for easy challenges |
+| GPT-5.4-mini | Codex | Fast, good for easy challenges |
 
 **Opt-in (add with `--models`):**
 

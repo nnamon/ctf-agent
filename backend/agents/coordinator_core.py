@@ -39,21 +39,26 @@ async def do_get_solve_status(deps: CoordinatorDeps) -> str:
 
 
 async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
-    # Retire ALL finished swarms before checking capacity
-    finished = [
-        name for name, swarm in deps.swarms.items()
-        if swarm.cancel_event.is_set()
-        or (name in deps.swarm_tasks and deps.swarm_tasks[name].done())
-    ]
-    for name in finished:
-        del deps.swarms[name]
-        deps.swarm_tasks.pop(name, None)
+    # Retire finished swarm_tasks (free their resources), but keep the
+    # ChallengeSwarm objects in deps.swarms so the dashboard can still
+    # display the solver list, flags, log paths, and writeup link for
+    # completed challenges. The capacity check below counts only swarms
+    # whose cancel_event is unset (i.e. still actively solving).
+    for name, task in list(deps.swarm_tasks.items()):
+        if task.done():
+            deps.swarm_tasks.pop(name, None)
 
-    active_count = len(deps.swarms)
+    active_count = sum(
+        1 for s in deps.swarms.values() if not s.cancel_event.is_set()
+    )
     if active_count >= deps.max_concurrent_challenges:
-        return f"At capacity ({active_count}/{deps.max_concurrent_challenges} challenges running). Wait for one to finish."
+        return (
+            f"At capacity ({active_count}/{deps.max_concurrent_challenges} "
+            f"challenges running). Wait for one to finish."
+        )
 
-    if challenge_name in deps.swarms:
+    if challenge_name in deps.swarms and \
+            not deps.swarms[challenge_name].cancel_event.is_set():
         return f"Swarm still running for {challenge_name}"
 
     # Per-session quota check. Block new spawns when persisted + in-process
