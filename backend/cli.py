@@ -185,7 +185,20 @@ def main(
     if challenges_dir == "challenges":
         challenges_dir = str(session.challenges_dir)
 
-    model_specs = list(models) if models else list(DEFAULT_MODELS)
+    # `--models` is multiple=True (so you can pass it twice) but also
+    # tolerate the more-natural comma-separated form a user might
+    # reach for first: `--models codex/gpt-5.5,codex/gpt-5.4-mini`.
+    # Without this split, the comma form silently becomes one
+    # malformed spec and every solver dies with a model-not-found
+    # error from the provider.
+    model_specs: list[str] = []
+    for m in models:
+        for part in str(m).split(","):
+            part = part.strip()
+            if part:
+                model_specs.append(part)
+    if not model_specs:
+        model_specs = list(DEFAULT_MODELS)
 
     from backend.sandbox import RUN_ID
     console.print("[bold]CTF Agent v2[/bold]")

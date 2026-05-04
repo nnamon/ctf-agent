@@ -621,6 +621,62 @@ pre.log {
   color: var(--md-sys-color-outline);
 }
 
+/* Quota-warning visuals.
+   - At ≥80% spent: cost text + bar fill turn yellow.
+   - At ≥100% (cap hit): the entire app bar gets a pulsing red glow,
+     the brand dot turns red, the cost is bold red, AND a banner
+     spans the top of <main> announcing the cap was reached and that
+     no new swarms can spawn. The user asked for "stuff red" — this
+     is intentionally hard to miss. */
+.app-bar.quota-warn   .hdr-cost   { color: var(--md-warning); }
+.app-bar.quota-danger {
+  box-shadow: 0 0 0 2px var(--md-sys-color-error), var(--md-elev-2);
+  animation: quota-pulse 1.6s infinite;
+}
+.app-bar.quota-danger .brand .dot {
+  background: var(--md-sys-color-error);
+  box-shadow: 0 0 8px var(--md-sys-color-error);
+}
+.app-bar.quota-danger .hdr-cost {
+  color: var(--md-sys-color-error);
+  font-weight: 700;
+}
+@keyframes quota-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px var(--md-sys-color-error), var(--md-elev-2); }
+  50%      { box-shadow: 0 0 0 2px rgba(242,184,181,.5), var(--md-elev-3); }
+}
+
+.quota-banner {
+  display: none;
+  margin: 0 auto 16px;
+  max-width: 1600px;
+  padding: 14px 20px;
+  border-radius: var(--md-shape-md);
+  background: var(--md-sys-color-error-container);
+  color: var(--md-sys-color-on-error-container);
+  border: 1px solid var(--md-sys-color-error);
+  font-size: 14px; font-weight: 500;
+  display: flex;            /* see :not() below — first 'display' wins is overridden */
+  align-items: center;
+  gap: 12px;
+  box-shadow: var(--md-elev-2);
+}
+.quota-banner:not(.show) { display: none; }
+.quota-banner .icon {
+  font-size: 20px;
+  flex-shrink: 0;
+  color: var(--md-sys-color-error);
+}
+.quota-banner .body { flex: 1; line-height: 1.4; }
+.quota-banner .body .strong { font-weight: 700; }
+.quota-banner .body .hint {
+  display: block;
+  margin-top: 4px;
+  font-weight: 400;
+  font-size: 12.5px;
+  opacity: .85;
+}
+
 /* "Now solving" status line in the top app bar. Renders one chip per
    running swarm; the chip is clickable and pings the activity dot so
    the bar shows the swarm is alive at a glance. Wraps cleanly on
@@ -820,6 +876,20 @@ pre.log {
     <span class="v mono" id="hdr-time">—</span></div>
 </header>
 <main>
+  <!-- Quota-exhausted banner. Hidden by default; the JS adds .show
+       once cost.total_usd >= session.quota_usd. Spans the full main
+       width so it's the first thing on screen when the cap is hit. -->
+  <div class="quota-banner" id="quota-banner" role="alert">
+    <span class="icon">⚠</span>
+    <div class="body">
+      <span class="strong">Quota exhausted.</span>
+      <span id="quota-banner-figures"></span>
+      No new swarms will spawn until the cap is raised.
+      <span class="hint">Bump <code>quota_usd</code> in
+        <code>session.yml</code> and reload to continue, or kill the
+        coordinator if you're done.</span>
+    </div>
+  </div>
   <div class="col-main">
     <div id="board"></div>
     <div id="detail-host"></div>
@@ -875,17 +945,33 @@ function renderHeader(s) {
     new Date(s.ts * 1000).toLocaleTimeString();
 
   const quotaWrap = document.getElementById('hdr-quota-wrap');
+  const appBar = document.querySelector('.app-bar');
+  const banner = document.getElementById('quota-banner');
   if (s.session.quota_usd) {
-    const pct = Math.min(100, (s.cost.total_usd / s.session.quota_usd) * 100);
+    // Real (uncapped) percentage drives both the meter (capped at 100
+    // for visual sanity) and the warn/danger thresholds.
+    const realPct = (s.cost.total_usd / s.session.quota_usd) * 100;
+    const pct = Math.min(100, realPct);
     quotaWrap.style.display = '';
     document.getElementById('hdr-quota-fill').style.width = pct.toFixed(1) + '%';
     document.getElementById('hdr-quota-text').textContent =
-      `${fmtUsd(s.cost.total_usd)} / ${fmtUsd(s.session.quota_usd)} (${pct.toFixed(0)}%)`;
+      `${fmtUsd(s.cost.total_usd)} / ${fmtUsd(s.session.quota_usd)} (${realPct.toFixed(0)}%)`;
     const bar = document.getElementById('hdr-quota');
-    bar.classList.toggle('danger', pct >= 100);
-    bar.classList.toggle('warn',   pct >= 80 && pct < 100);
+    const danger = realPct >= 100;
+    const warn = realPct >= 80 && !danger;
+    bar.classList.toggle('danger', danger);
+    bar.classList.toggle('warn',   warn);
+    appBar.classList.toggle('quota-danger', danger);
+    appBar.classList.toggle('quota-warn',   warn);
+    banner.classList.toggle('show', danger);
+    if (danger) {
+      document.getElementById('quota-banner-figures').textContent =
+        ` Spent ${fmtUsd(s.cost.total_usd)} of ${fmtUsd(s.session.quota_usd)} (${realPct.toFixed(0)}%). `;
+    }
   } else {
     quotaWrap.style.display = 'none';
+    appBar.classList.remove('quota-warn', 'quota-danger');
+    banner.classList.remove('show');
   }
 
   // "Now solving" status line — chips for every running swarm.
