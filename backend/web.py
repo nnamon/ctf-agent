@@ -844,32 +844,64 @@ function renderBoard(challenges) {
   }
 }
 
-let lastDetailSig = "";
+// Detail-panel render is split into two passes:
+//   structSig — drives a full innerHTML rebuild. Includes fields whose
+//               change requires re-laying out the panel: which challenge,
+//               its status, the set of solvers + their flag/confirmed,
+//               which logs are currently expanded.
+//   dynamic   — driven from cell references captured during the structural
+//               render. Updates the volatile fields (step_count + cost +
+//               header cost) IN PLACE so step counts can tick without
+//               wiping the trace timeline or scrambling scroll/selection.
+let lastDetailStructSig = "";
+let detailCells = null;  // populated by structural render
 
 function renderDetail(challenges) {
   if (!selected) {
-    if (lastDetailSig !== "") { detailHostEl.innerHTML = ''; lastDetailSig = ''; }
+    if (lastDetailStructSig !== "") {
+      detailHostEl.innerHTML = '';
+      lastDetailStructSig = '';
+      detailCells = null;
+    }
     return;
   }
   const c = challenges.find(x => x.challenge === selected);
   if (!c) {
     selected = null;
     detailHostEl.innerHTML = '';
-    lastDetailSig = '';
+    lastDetailStructSig = '';
+    detailCells = null;
     return;
   }
-  // Same anti-flicker pattern as renderBoard.
-  const sig = JSON.stringify({
+
+  const structSig = JSON.stringify({
     selected, status: c.status,
-    cost: Math.round(c.cost_usd * 100),
     expanded: Array.from(expandedLogs).sort(),
-    solvers: c.solvers.map(s => [
-      s.model, s.step_count, Math.round(s.cost_usd * 100),
-      s.flag, s.confirmed,
-    ]),
+    hasSolvers: c.solvers.length > 0,
+    solvers: c.solvers.map(s => [s.model, s.flag, s.confirmed]),
   });
-  if (sig === lastDetailSig) return;
-  lastDetailSig = sig;
+
+  if (structSig === lastDetailStructSig && detailCells) {
+    // Structural state unchanged — only update dynamic numbers in place.
+    // This keeps the trace timeline DOM intact across step-count ticks,
+    // which preserves text selection and scroll position.
+    if (detailCells.headerCost) {
+      const newCost = c.cost_usd > 0 ? `${fmtUsd(c.cost_usd)} spent` : '';
+      if (detailCells.headerCost.textContent !== newCost) {
+        detailCells.headerCost.textContent = newCost;
+      }
+    }
+    for (const sv of c.solvers) {
+      const cells = detailCells.solverCells.get(sv.model);
+      if (!cells) continue;
+      const stepStr = String(sv.step_count);
+      if (cells.step.textContent !== stepStr) cells.step.textContent = stepStr;
+      const costStr = fmtUsd(sv.cost_usd);
+      if (cells.cost.textContent !== costStr) cells.cost.textContent = costStr;
+    }
+    return;
+  }
+  lastDetailStructSig = structSig;
 
   const cNameEnc = encodeURIComponent(c.challenge);
   let html = `<section class="detail">
@@ -880,7 +912,7 @@ function renderDetail(challenges) {
       </div>
       <span class="spacer"></span>
       ${chip(c.status)}
-      ${c.cost_usd > 0 ? `<span class="meta mono">${fmtUsd(c.cost_usd)} spent</span>` : ''}
+      <span class="meta mono detail-cost">${c.cost_usd > 0 ? `${fmtUsd(c.cost_usd)} spent` : ''}</span>
       <button class="close" onclick="closeDetail()" aria-label="Close">✕</button>
     </div>`;
 
@@ -905,10 +937,10 @@ function renderDetail(challenges) {
         : (sv.flag
             ? `<span class="mono" style="color:var(--md-warning)">${escapeHTML(sv.flag)} (unconfirmed)</span>`
             : '<span style="color:var(--md-sys-color-on-surface-variant)">—</span>');
-      html += `<tr class="${sv.confirmed ? 'winner' : ''}">
+      html += `<tr class="${sv.confirmed ? 'winner' : ''}" data-model="${escapeHTML(sv.model)}">
         <td class="model">${escapeHTML(sv.model)}</td>
-        <td>${sv.step_count}</td>
-        <td class="right mono">${fmtUsd(sv.cost_usd)}</td>
+        <td class="step-cell">${sv.step_count}</td>
+        <td class="right mono cost-cell">${fmtUsd(sv.cost_usd)}</td>
         <td>${flagCell}</td>
         <td class="actions">
           <button class="small outlined" onclick="toggleLog('${cNameEnc}','${encodeURIComponent(sv.model)}')">${isOpen ? 'Hide log' : 'Log'}</button>
@@ -946,6 +978,20 @@ function renderDetail(challenges) {
 
   html += '</section>';
   detailHostEl.innerHTML = html;
+
+  // Capture in-place-updateable cells so subsequent ticks can update
+  // step_count / cost without rebuilding the whole panel.
+  detailCells = {
+    headerCost: detailHostEl.querySelector('.detail-cost'),
+    solverCells: new Map(),
+  };
+  detailHostEl.querySelectorAll('tr[data-model]').forEach(tr => {
+    detailCells.solverCells.set(tr.dataset.model, {
+      step: tr.querySelector('.step-cell'),
+      cost: tr.querySelector('.cost-cell'),
+    });
+  });
+
   for (const k of expandedLogs) fetchLogInto(k);
 }
 
@@ -1050,6 +1096,14 @@ function toggleLog(chalEnc, modelEnc) {
   if (latestStatus) renderDetail(latestStatus.challenges);
 }
 
+// Per-host state so we can:
+//  - skip re-render when the trace content hasn't changed (avoids
+//    DOM thrash from the periodic refresh);
+//  - only auto-scroll-to-bottom on first open OR when the user was
+//    already at the bottom (so they can scroll up to read old events
+//    without being yanked down every 4 seconds).
+const traceState = new WeakMap();
+
 async function fetchLogInto(k) {
   const sep = '\\u241F';
   const i = k.indexOf(sep);
@@ -1063,15 +1117,36 @@ async function fetchLogInto(k) {
     `[data-trace-host][data-chal="${CSS.escape(chal)}"][data-model="${CSS.escape(model)}"]`
   );
   if (!host) return;
+
   if (!data.lines || !data.lines.length) {
-    host.innerHTML = '<div class="empty-detail" style="padding:12px">'
-      + '(no log yet — solver may still be starting)</div>';
+    if (host.dataset.state !== 'empty') {
+      host.innerHTML = '<div class="empty-detail" style="padding:12px">'
+        + '(no log yet — solver may still be starting)</div>';
+      host.dataset.state = 'empty';
+    }
     return;
   }
+
+  // Skip if content unchanged (preserves text selection + scroll position).
+  const sig = data.lines.length + ':' + data.lines[data.lines.length - 1];
+  if (host.dataset.sig === sig) return;
+
+  // Capture scroll state from the existing trace (if any) before replacing.
+  const prevTrace = host.querySelector('.trace');
+  const isFirstRender = !prevTrace;
+  const wasAtBottom = prevTrace
+    ? (prevTrace.scrollHeight - prevTrace.scrollTop - prevTrace.clientHeight) < 24
+    : false;
+
   host.innerHTML = renderTrace(data.lines);
-  // Auto-scroll to the latest event so the operator sees what just happened.
-  const traceEl = host.querySelector('.trace');
-  if (traceEl) traceEl.scrollTop = traceEl.scrollHeight;
+  host.dataset.sig = sig;
+  host.dataset.state = 'rendered';
+
+  // Auto-scroll only when it won't fight the user.
+  if (isFirstRender || wasAtBottom) {
+    const traceEl = host.querySelector('.trace');
+    if (traceEl) traceEl.scrollTop = traceEl.scrollHeight;
+  }
 }
 
 // Parse a JSONL trace into a structured timeline. Each line is a single
