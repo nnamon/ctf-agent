@@ -175,8 +175,15 @@ RUN mkdir -p /opt/wordlists \
 # trailmark requires Python 3.12+, but the rest of the sandbox is on the system
 # Python 3.10. We install 3.12 alongside (via deadsnakes) and put trailmark there.
 # Use as: python3.12 -c "import trailmark; ..."
-RUN apt-get update && apt-get install -y --no-install-recommends software-properties-common \
-    && add-apt-repository -y ppa:deadsnakes/ppa \
+#
+# We add the deadsnakes apt source manually rather than via add-apt-repository
+# because the latter calls Launchpad's REST API to fetch the signing key — and
+# that API has a history of flaky 504 timeouts that tank CI builds. Hitting
+# keyserver.ubuntu.com directly is far more reliable.
+RUN curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xF23C5A6CF475977595C89F51BA6932366A755776" \
+        | gpg --dearmor -o /usr/share/keyrings/deadsnakes.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/deadsnakes.gpg] https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu jammy main" \
+        > /etc/apt/sources.list.d/deadsnakes.list \
     && apt-get update && apt-get install -y --no-install-recommends \
         python3.12 python3.12-venv python3.12-dev \
     && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.12 \
