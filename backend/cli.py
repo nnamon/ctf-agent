@@ -42,6 +42,10 @@ def _setup_logging(verbose: bool = False) -> None:
 @click.option("--msg-port", default=0, type=int, help="Operator message port (0 = auto)")
 @click.option("--no-writeup", is_flag=True, help="Skip the post-mortem writeup after each solve")
 @click.option("--writeup-model", default="claude-opus-4-6", help="Model used to generate the post-mortem writeup")
+@click.option("--attempt-log-path", default="logs/attempts.db",
+              help="SQLite file persisting flag attempts; used to short-circuit duplicate-rejected flags and inject 'already-rejected' history into prompts.")
+@click.option("--no-attempt-log", is_flag=True,
+              help="Disable persistent attempt logging (default: enabled).")
 @click.option("-v", "--verbose", is_flag=True, help="Verbose logging")
 def main(
     ctfd_url: str | None,
@@ -57,6 +61,8 @@ def main(
     msg_port: int,
     no_writeup: bool,
     writeup_model: str,
+    attempt_log_path: str,
+    no_attempt_log: bool,
     verbose: bool,
 ) -> None:
     """CTF Agent — multi-model solver swarm.
@@ -71,6 +77,7 @@ def main(
     if ctfd_token:
         settings.ctfd_token = ctfd_token
     settings.max_concurrent_challenges = max_challenges
+    settings.attempt_log_path = None if no_attempt_log else attempt_log_path
 
     model_specs = list(models) if models else list(DEFAULT_MODELS)
 
@@ -79,6 +86,7 @@ def main(
     console.print(f"  Models: {', '.join(model_specs)}")
     console.print(f"  Image: {settings.sandbox_image}")
     console.print(f"  Max challenges: {max_challenges}")
+    console.print(f"  Attempt log: {settings.attempt_log_path or '(disabled)'}")
     console.print()
 
     if challenge:
@@ -123,6 +131,7 @@ async def _run_single(
         token=settings.ctfd_token,
         username=settings.ctfd_user,
         password=settings.ctfd_pass,
+        attempt_log_path=getattr(settings, "attempt_log_path", None),
     )
     cost_tracker = CostTracker()
 

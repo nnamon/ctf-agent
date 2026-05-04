@@ -60,12 +60,18 @@ def build_prompt(
     distfile_names: list[str],
     container_arch: str = "unknown",
     has_named_tools: bool = True,
+    prior_attempts: list | None = None,
 ) -> str:
     """Build the system prompt.
 
     has_named_tools: True for Pydantic AI solver (has view_image, webhook_create, etc.
     as discrete tools). False for Claude SDK (bash-only — model should use
     steghide/exiftool/curl instead). Codex has named dynamic tools so uses True.
+
+    prior_attempts: optional list of `Attempt` records (from
+    `Backend.previous_attempts(name)`) — when provided, an
+    "ALREADY-REJECTED FLAGS" section is rendered so the model doesn't
+    re-propose flags that have already been submitted and rejected.
     """
     conn_info = _rewrite_connection_info(meta.connection_info.strip())
 
@@ -129,6 +135,36 @@ def build_prompt(
         for h in visible_hints:
             lines.append(f"- {h['content']}")
         lines.append("")
+
+    # Rejected-flags section. Backed by AttemptLogBackend so the model
+    # doesn't waste turns re-proposing flags that have already been
+    # submitted and rejected for THIS challenge.
+    if prior_attempts:
+        from datetime import datetime
+        rejected = [a for a in prior_attempts if a.status == "incorrect"]
+        confirmed = [a for a in prior_attempts if a.status in ("correct", "already_solved")]
+        if confirmed:
+            for a in confirmed:
+                lines += [
+                    "## Already Solved",
+                    f"This challenge already has a CORRECT submission on file: `{a.flag}`.",
+                    "If you find this same flag, just `submit_flag` it — the harness will short-circuit.",
+                    "",
+                ]
+                break  # one is enough
+        if rejected:
+            lines.append("## ALREADY-REJECTED FLAGS — do not re-propose")
+            lines.append("")
+            lines.append("The following flag values have already been submitted to this challenge")
+            lines.append("and rejected as INCORRECT. Do NOT propose them again — the harness will")
+            lines.append("auto-reject duplicates without spending another submission attempt.")
+            lines.append("")
+            for a in rejected[-30:]:  # cap so the prompt doesn't bloat
+                ts = datetime.fromtimestamp(a.ts).strftime("%Y-%m-%d %H:%M")
+                lines.append(f"  - `{a.flag}`  (rejected {ts})")
+            if len(rejected) > 30:
+                lines.append(f"  - ... ({len(rejected) - 30} more older rejections elided)")
+            lines.append("")
 
     # pyghidra is always installed in the sandbox — show for RE/pwn/misc categories
     # or when distfiles contain binaries (non-text files)

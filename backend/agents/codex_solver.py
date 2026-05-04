@@ -184,9 +184,10 @@ class CodexSolver:
         container_arch = arch_result.stdout.strip() or "unknown"
 
         distfile_names = list_distfiles(self.challenge_dir)
+        prior = self.ctfd.previous_attempts(self.meta.name)
         system_prompt = build_prompt(
             self.meta, distfile_names, container_arch=container_arch,
-            has_named_tools=True,
+            has_named_tools=True, prior_attempts=prior,
         )
 
         self._proc = await asyncio.create_subprocess_exec(

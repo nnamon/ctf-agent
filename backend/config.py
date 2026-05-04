@@ -30,4 +30,8 @@ class Settings(BaseSettings):
     max_attempts_per_challenge: int = 3
     container_memory_limit: str = "16g"
 
+    # Persistent flag-attempt log (sqlite). None disables.
+    # The CLI's --attempt-log-path / --no-attempt-log flags overwrite this.
+    attempt_log_path: str | None = "logs/attempts.db"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}

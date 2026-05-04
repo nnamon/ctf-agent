@@ -25,6 +25,16 @@ class SubmitResult:
     display: str  # human-readable summary suitable for log output
 
 
+@dataclass
+class Attempt:
+    """A historical flag-submission attempt, persisted by AttemptLogBackend."""
+    challenge_name: str
+    flag: str
+    status: str
+    message: str
+    ts: int  # unix epoch seconds
+
+
 class Backend(ABC):
     """Generic backend protocol for flag submission, listing, and fetch."""
 
@@ -32,6 +42,13 @@ class Backend(ABC):
     @abstractmethod
     async def submit_flag(self, challenge_name: str, flag: str) -> SubmitResult:
         ...
+
+    # ---- attempt history (optional; default = no history) ----
+    def previous_attempts(self, challenge_name: str) -> list[Attempt]:
+        """Return prior submission attempts for this challenge. Default
+        implementation returns []; AttemptLogBackend overrides this to
+        query its persistent store."""
+        return []
 
     # ---- listing / poll (used by coordinator + poller) ----
     @abstractmethod

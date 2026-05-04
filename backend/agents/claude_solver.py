@@ -102,9 +102,10 @@ class ClaudeSolver:
             "Use bash for everything: cat/head to read files, tee/echo> to write, find/grep to search. "
             "submit_flag 'FLAG' to submit. notify_coordinator 'MSG' to message the coordinator.\n\n"
         )
+        prior = self.ctfd.previous_attempts(self.meta.name)
         system_prompt = sandbox_preamble + build_prompt(
             self.meta, distfile_names, container_arch=container_arch,
-            has_named_tools=False,
+            has_named_tools=False, prior_attempts=prior,
         )
 
         # PreToolUse hook: rewrite Bash commands to run in the sandbox container.

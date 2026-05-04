@@ -39,6 +39,7 @@ def build_deps(
         token=settings.ctfd_token,
         username=settings.ctfd_user,
         password=settings.ctfd_pass,
+        attempt_log_path=getattr(settings, "attempt_log_path", None),
     )
     cost_tracker = CostTracker()
     specs = model_specs or list(DEFAULT_MODELS)

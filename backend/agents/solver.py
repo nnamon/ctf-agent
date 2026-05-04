@@ -168,10 +168,12 @@ class Solver:
         container_arch = arch_result.stdout.strip() or "unknown"
 
         distfile_names = list_distfiles(self.challenge_dir)
+        prior = self.ctfd.previous_attempts(self.meta.name)
         system_prompt = build_prompt(
             self.meta,
             distfile_names,
             container_arch=container_arch,
+            prior_attempts=prior,
         )
 
         model = resolve_model(self.model_spec, self.settings)
