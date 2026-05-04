@@ -18,6 +18,7 @@ from backend.backends.base import Attempt, Backend, SubmitResult
 from backend.backends.ctfd import CTFdBackend, CTFdSessionBackend
 from backend.backends.local import LocalBackend
 from backend.backends.manual_confirm import ManualConfirmBackend
+from backend.backends.pwnabletw import PwnableTwBackend
 from backend.backends.pwncollege import PwnCollegeBackend
 
 
@@ -79,6 +80,12 @@ def make_backend(
         # POST doesn't need to scrape /challenges. Bound to the same session.
         if csrf_token:
             inner._csrf_token = csrf_token
+    elif kind in ("pwnabletw", "pwnable.tw", "pwntw"):
+        inner = PwnableTwBackend(
+            base_url=base_url or "https://pwnable.tw",
+            username=username,
+            password=password,
+        )
     elif kind in ("pwncollege", "pwn.college", "dojo"):
         inner = PwnCollegeBackend(
             base_url=base_url or "https://pwn.college",
@@ -104,7 +111,7 @@ def make_backend(
 __all__ = [
     "Attempt", "Backend", "SubmitResult",
     "CTFdBackend", "CTFdSessionBackend", "LocalBackend",
-    "PwnCollegeBackend",
+    "PwnCollegeBackend", "PwnableTwBackend",
     "AttemptLogBackend", "ManualConfirmBackend",
     "make_backend",
 ]
