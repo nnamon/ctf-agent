@@ -42,66 +42,135 @@ INDEX_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <title>ctf-agent dashboard</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Material Design 3 typography. Self-host these files for offline use. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0&display=swap" rel="stylesheet">
 <style>
+/*
+ * Material Design 3 dark theme.
+ * Color tokens follow https://m3.material.io/styles/color/the-color-system/key-colors-tones
+ * Type scale follows https://m3.material.io/styles/typography/type-scale-tokens
+ * Elevation follows https://m3.material.io/styles/elevation/tokens
+ */
 :root {
-  --bg: #0d1117;
-  --bg-elev: #161b22;
-  --bg-deep: #010409;
-  --fg: #e6edf3;
-  --fg-dim: #b1bac4;
-  --muted: #7d8590;
-  --line: #30363d;
-  --line-soft: #21262d;
-  --accent: #2f81f7;
-  --green: #3fb950;
-  --yellow: #d29922;
-  --red: #f85149;
-  --cyan: #79c0ff;
-  --magenta: #d2a8ff;
+  /* Surface tones (dark) */
+  --md-sys-color-surface:                  #141218;
+  --md-sys-color-surface-dim:              #141218;
+  --md-sys-color-surface-bright:           #3b383e;
+  --md-sys-color-surface-container-lowest: #0f0d13;
+  --md-sys-color-surface-container-low:    #1d1b20;
+  --md-sys-color-surface-container:        #211f26;
+  --md-sys-color-surface-container-high:   #2b2930;
+  --md-sys-color-surface-container-highest:#36343b;
+  --md-sys-color-on-surface:               #e6e0e9;
+  --md-sys-color-on-surface-variant:       #cac4d0;
+  --md-sys-color-outline:                  #938f99;
+  --md-sys-color-outline-variant:          #49454f;
+
+  /* Key colors */
+  --md-sys-color-primary:                  #d0bcff;
+  --md-sys-color-on-primary:               #381e72;
+  --md-sys-color-primary-container:        #4f378b;
+  --md-sys-color-on-primary-container:     #eaddff;
+  --md-sys-color-secondary:                #ccc2dc;
+  --md-sys-color-tertiary:                 #efb8c8;
+  --md-sys-color-error:                    #f2b8b5;
+  --md-sys-color-on-error:                 #601410;
+  --md-sys-color-error-container:          #8c1d18;
+  --md-sys-color-on-error-container:       #f9dedc;
+
+  /* Custom semantic mappings on top of MD3 */
+  --md-success:        #a5d6a7;
+  --md-success-bg:     rgba(165, 214, 167, .12);
+  --md-warning:        #ffb74d;
+  --md-warning-bg:     rgba(255, 183, 77, .12);
+  --md-info:           #90caf9;
+  --md-info-bg:        rgba(144, 202, 249, .12);
+
+  /* Elevation shadows (https://m3.material.io/styles/elevation/tokens). */
+  --md-elev-1: 0 1px 2px 0 rgba(0,0,0,.30), 0 1px 3px 1px rgba(0,0,0,.15);
+  --md-elev-2: 0 1px 2px 0 rgba(0,0,0,.30), 0 2px 6px 2px rgba(0,0,0,.15);
+  --md-elev-3: 0 1px 3px 0 rgba(0,0,0,.30), 0 4px 8px 3px rgba(0,0,0,.15);
+
+  /* Shape (rounded corners) */
+  --md-shape-xs: 4px;
+  --md-shape-sm: 8px;
+  --md-shape-md: 12px;
+  --md-shape-lg: 16px;
+  --md-shape-xl: 28px;
 }
+
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; height: 100%; }
 body {
-  background: var(--bg);
-  color: var(--fg);
-  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
-        "Helvetica Neue", Arial, sans-serif;
+  background: var(--md-sys-color-surface);
+  color: var(--md-sys-color-on-surface);
+  font-family: "Roboto", "Google Sans", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.43;  /* MD3 body-medium */
+  letter-spacing: 0.0179em;
   -webkit-font-smoothing: antialiased;
 }
-.mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.mono { font-family: "Roboto Mono", ui-monospace, monospace; }
 
-header {
-  padding: 14px 24px;
-  border-bottom: 1px solid var(--line);
+/* Top app bar (MD3 medium top app bar style) */
+.app-bar {
   display: flex;
   gap: 24px;
   align-items: center;
   flex-wrap: wrap;
-  background: linear-gradient(180deg, #0e1320 0%, var(--bg) 100%);
+  padding: 12px 24px;
+  background: var(--md-sys-color-surface-container);
+  box-shadow: var(--md-elev-2);
+  position: sticky; top: 0; z-index: 10;
 }
-.brand { display: flex; align-items: center; gap: 8px; font-weight: 600; }
-.brand .dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: var(--green); box-shadow: 0 0 8px var(--green);
+.app-bar .brand {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 22px;       /* title-large */
+  line-height: 28px;
+  font-weight: 500;
+  color: var(--md-sys-color-on-surface);
+}
+.app-bar .brand .dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--md-success);
+  box-shadow: 0 0 8px var(--md-success);
   animation: pulse 2s infinite;
 }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
-.kv { display: flex; gap: 8px; align-items: baseline; }
-.kv .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
-.kv .v { color: var(--fg); }
-.kv .v.mono { color: var(--cyan); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
 
-.quota-bar {
-  display: inline-flex; align-items: center; gap: 8px;
+.kv { display: flex; gap: 6px; align-items: baseline; }
+.kv .k {
+  font-size: 11px; line-height: 16px;  /* label-small */
+  letter-spacing: 0.045em; font-weight: 500;
+  text-transform: uppercase;
+  color: var(--md-sys-color-on-surface-variant);
 }
-.quota-bar .track {
-  width: 120px; height: 6px; border-radius: 3px;
-  background: var(--line-soft); overflow: hidden;
+.kv .v {
+  font-size: 14px; font-weight: 500;
+  color: var(--md-sys-color-on-surface);
 }
-.quota-bar .fill { height: 100%; background: var(--green); transition: width .3s, background .3s; }
-.quota-bar.warn .fill { background: var(--yellow); }
-.quota-bar.danger .fill { background: var(--red); }
 
+/* Linear progress (MD3) */
+.progress {
+  display: inline-flex; align-items: center; gap: 10px;
+}
+.progress .track {
+  width: 140px; height: 4px; border-radius: 2px;
+  background: var(--md-sys-color-surface-container-highest);
+  overflow: hidden;
+}
+.progress .fill {
+  height: 100%;
+  background: var(--md-success);
+  transition: width .25s ease, background .25s;
+}
+.progress.warn   .fill { background: var(--md-warning); }
+.progress.danger .fill { background: var(--md-sys-color-error); }
+.progress .pct { color: var(--md-sys-color-on-surface-variant); font-size: 12px; }
+
+/* Layout */
 main {
   display: grid;
   grid-template-columns: 1fr 360px;
@@ -113,167 +182,231 @@ main {
 main > .col-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 main > .col-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+
+/* Cards (MD3 elevated surface) */
 .card {
-  background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 16px;
+  background: var(--md-sys-color-surface-container);
+  border-radius: var(--md-shape-md);
+  box-shadow: var(--md-elev-1);
+  padding: 16px 20px;
   display: flex;
   flex-direction: column;
   min-width: 0;
 }
 .card h2 {
-  font-size: 11px;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  color: var(--muted);
+  font-size: 16px; line-height: 24px; font-weight: 500;
+  letter-spacing: 0.009em;             /* title-medium */
+  color: var(--md-sys-color-on-surface);
   margin: 0 0 12px;
-  font-weight: 600;
 }
-.card h2 .extra { color: var(--fg-dim); text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: 6px; }
+.card h2 .extra {
+  color: var(--md-sys-color-on-surface-variant);
+  font-weight: 400; font-size: 13px; margin-left: 8px;
+}
 
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line-soft); }
-th { color: var(--muted); font-weight: 500; font-size: 11px;
-     text-transform: uppercase; letter-spacing: .04em; }
-tr:last-child td { border-bottom: 0; }
-tr:hover td { background: rgba(177, 186, 196, .04); }
+/* Tables */
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 12px 16px; }
+th {
+  font-size: 11px; line-height: 16px; font-weight: 500;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+  color: var(--md-sys-color-on-surface-variant);
+}
+tbody tr { border-top: 1px solid var(--md-sys-color-outline-variant); }
+tbody tr:hover td { background: rgba(208, 188, 255, .04); }
 td.right { text-align: right; }
 
-.pill {
-  display: inline-block;
-  padding: 2px 10px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 500;
-  border: 1px solid;
+/* Chips (MD3 assist chip / filter chip style) */
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 11px; font-weight: 500; letter-spacing: 0.045em;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  background: transparent;
+  color: var(--md-sys-color-on-surface-variant);
+  text-transform: uppercase;
 }
-.pill.run    { color: var(--green);  border-color: rgba(63, 185, 80, .4);  background: rgba(63, 185, 80, .08); }
-.pill.done   { color: var(--cyan);   border-color: rgba(121, 192, 255, .4); background: rgba(121, 192, 255, .08); }
-.pill.killed { color: var(--red);    border-color: rgba(248, 81, 73, .4);  background: rgba(248, 81, 73, .08); }
+.chip.run    { color: var(--md-success); border-color: rgba(165,214,167,.4);  background: var(--md-success-bg); }
+.chip.done   { color: var(--md-info);    border-color: rgba(144,202,249,.4); background: var(--md-info-bg); }
+.chip.killed { color: var(--md-sys-color-error); border-color: rgba(242,184,181,.4); background: rgba(242,184,181,.10); }
 
+/* Buttons (MD3 filled / outlined / text / icon) */
 button {
-  background: var(--line-soft);
-  color: var(--fg);
-  border: 1px solid var(--line);
-  padding: 6px 12px;
-  border-radius: 6px;
+  font-family: inherit;
+  font-size: 14px; line-height: 20px; font-weight: 500;
+  letter-spacing: 0.007em;             /* label-large */
+  border-radius: var(--md-shape-xl);
+  padding: 8px 20px;
+  border: 1px solid transparent;
   cursor: pointer;
-  font: inherit; font-size: 12px;
-  transition: background .15s, border-color .15s;
+  transition: background-color .15s, box-shadow .15s, border-color .15s;
+  background: transparent;
+  color: var(--md-sys-color-primary);
 }
-button:hover { background: #2c333d; border-color: #444c56; }
-button:active { background: #1f242c; }
-button.danger { color: var(--red); border-color: rgba(248, 81, 73, .35); }
-button.danger:hover { background: rgba(248, 81, 73, .12); border-color: var(--red); }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.primary:hover { background: #1f6feb; }
+button:hover { background: rgba(208, 188, 255, .08); }
+button:active { background: rgba(208, 188, 255, .14); }
 
-input[type=text], select {
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--line);
-  padding: 7px 10px;
-  border-radius: 6px;
-  font: inherit; font-size: 13px;
+button.filled {
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+button.filled:hover  { background: #ddc6ff; box-shadow: var(--md-elev-1); }
+button.filled:active { background: #c5acf2; }
+
+button.outlined {
+  border-color: var(--md-sys-color-outline);
+  color: var(--md-sys-color-primary);
+  background: transparent;
+}
+button.outlined:hover { background: rgba(208, 188, 255, .08); }
+
+button.danger {
+  color: var(--md-sys-color-error);
+}
+button.danger:hover { background: rgba(242, 184, 181, .10); }
+
+button.small { padding: 4px 14px; font-size: 12px; line-height: 16px; }
+
+/* Outlined text fields (MD3) */
+.field {
+  position: relative;
   flex: 1;
   min-width: 0;
 }
-input[type=text]:focus, select:focus {
+.field input {
+  width: 100%;
+  background: transparent;
+  color: var(--md-sys-color-on-surface);
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: var(--md-shape-xs);
+  padding: 12px 16px;
+  font: inherit;
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(47, 129, 247, .2);
+  transition: border-color .15s, border-width .15s;
 }
+.field input::placeholder { color: var(--md-sys-color-on-surface-variant); }
+.field input:hover  { border-color: var(--md-sys-color-on-surface); }
+.field input:focus  { border-color: var(--md-sys-color-primary); border-width: 2px; padding: 11px 15px; }
 
-form { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+form { display: flex; gap: 12px; align-items: center; margin-top: 12px; }
 
-.events { max-height: 360px; overflow-y: auto; font-size: 12px; }
+/* Events */
+.events { max-height: 480px; overflow-y: auto; }
 .event-row {
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--line-soft);
+  padding: 10px 4px;
   display: grid;
-  grid-template-columns: 70px 130px 1fr;
-  gap: 8px;
+  grid-template-columns: 60px 130px 1fr;
+  gap: 12px;
   align-items: baseline;
 }
-.event-row:last-child { border-bottom: 0; }
-.event-row .t { color: var(--muted); font-family: ui-monospace, monospace; font-size: 11px; }
-.event-row .k { color: var(--cyan); font-weight: 500; }
-.event-row.ok .k  { color: var(--green); }
-.event-row.err .k { color: var(--red); }
+.event-row + .event-row { border-top: 1px solid var(--md-sys-color-outline-variant); }
+.event-row .t {
+  color: var(--md-sys-color-on-surface-variant);
+  font-family: "Roboto Mono", monospace; font-size: 11px;
+}
+.event-row .k {
+  font-size: 12px; font-weight: 500;
+  color: var(--md-info);
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+.event-row.ok  .k { color: var(--md-success); }
+.event-row.err .k { color: var(--md-sys-color-error); }
+.event-row .body {
+  font-size: 13px;
+  color: var(--md-sys-color-on-surface);
+}
 
+/* Code / log surfaces */
 pre.log {
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 11.5px;
-  line-height: 1.5;
-  background: var(--bg-deep);
-  border: 1px solid var(--line-soft);
-  padding: 12px;
-  border-radius: 8px;
+  font-family: "Roboto Mono", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  background: var(--md-sys-color-surface-container-lowest);
+  border-radius: var(--md-shape-sm);
+  padding: 16px;
   margin: 0;
-  max-height: 360px;
+  max-height: 320px;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
+  color: var(--md-sys-color-on-surface);
 }
-
-.log-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
-.log-toolbar select { flex: 1; }
 
 .empty {
-  padding: 24px;
+  padding: 32px;
   text-align: center;
-  color: var(--muted);
-  border: 1px dashed var(--line);
-  border-radius: 8px;
-  font-size: 13px;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 14px;
+}
+.empty .icon {
+  font-family: "Material Symbols Outlined";
+  font-size: 36px; display: block; margin-bottom: 8px;
+  color: var(--md-sys-color-outline);
 }
 
-/* Challenge cards */
+/* Challenge cards (per-challenge) */
 .challenge {
-  background: var(--bg-elev);
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  background: var(--md-sys-color-surface-container);
+  border-radius: var(--md-shape-md);
+  box-shadow: var(--md-elev-1);
   overflow: hidden;
 }
 .challenge-header {
   display: flex; align-items: center; gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--line-soft);
-  background: linear-gradient(180deg, rgba(255,255,255,.02), transparent);
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-surface-container-low);
 }
-.challenge-header .title { font-weight: 600; font-size: 14px; }
-.challenge-header .meta { color: var(--muted); font-size: 12px; }
+.challenge-header .title {
+  font-size: 18px; line-height: 24px; font-weight: 500;
+  letter-spacing: 0.0125em;            /* title-large */
+  color: var(--md-sys-color-on-surface);
+}
+.challenge-header .meta {
+  color: var(--md-sys-color-on-surface-variant); font-size: 12px;
+}
 .challenge-header .spacer { flex: 1; }
-.challenge-header .cost { font-family: ui-monospace, monospace; color: var(--fg-dim); font-size: 12px; }
+.challenge-header .cost {
+  font-family: "Roboto Mono", monospace;
+  color: var(--md-sys-color-on-surface-variant); font-size: 12px;
+}
 
 .solvers { width: 100%; }
-.solvers th, .solvers td {
-  padding: 8px 16px; border-bottom: 1px solid var(--line-soft);
-  font-size: 12.5px;
+.solvers .model {
+  font-family: "Roboto Mono", monospace;
+  color: var(--md-sys-color-on-surface);
+  font-size: 13px;
 }
-.solvers th {
-  font-size: 10.5px;
-}
-.solvers tr:last-child td { border-bottom: 0; }
-.solvers .model { font-family: ui-monospace, monospace; color: var(--fg-dim); }
-.solvers .winner td { background: rgba(63, 185, 80, .06); }
-.solvers .winner .model { color: var(--green); font-weight: 500; }
+.solvers .winner td { background: var(--md-success-bg); }
+.solvers .winner .model { color: var(--md-success); font-weight: 500; }
 .solvers .winner .model::before { content: "★ "; }
-.solvers td.actions { text-align: right; }
-.solvers td.actions button { padding: 3px 10px; font-size: 11px; }
+.solvers td.actions { text-align: right; padding: 6px 16px; }
 
-.log-row td { padding: 0 16px 12px; border-bottom: 1px solid var(--line-soft); }
-.log-row pre.log { max-height: 260px; }
+.log-row td {
+  padding: 0 20px 16px;
+  background: var(--md-sys-color-surface-container);
+}
+.log-row pre.log { max-height: 280px; }
 
 .challenge-footer {
   display: flex; justify-content: flex-end; gap: 8px;
-  padding: 8px 16px;
-  background: rgba(0, 0, 0, .15);
+  padding: 12px 20px;
+  background: var(--md-sys-color-surface-container-low);
+}
+
+/* Material Symbols icon helper */
+.icon-inline {
+  font-family: "Material Symbols Outlined";
+  font-size: 18px;
+  vertical-align: middle;
+  margin-right: 6px;
 }
 </style></head>
 <body>
-<header>
+<header class="app-bar">
   <div class="brand"><span class="dot"></span>ctf-agent</div>
   <div class="kv"><span class="k">session</span>
     <span class="v" id="hdr-session">—</span></div>
@@ -283,9 +416,9 @@ pre.log {
     <span class="v mono" id="hdr-cost">$0.00</span></div>
   <div class="kv" id="hdr-quota-wrap" style="display:none">
     <span class="k">quota</span>
-    <span class="quota-bar" id="hdr-quota">
+    <span class="progress" id="hdr-quota">
       <span class="track"><span class="fill" id="hdr-quota-fill" style="width:0%"></span></span>
-      <span class="v mono" id="hdr-quota-text"></span>
+      <span class="pct mono" id="hdr-quota-text"></span>
     </span>
   </div>
   <div class="kv" style="margin-left:auto"><span class="k">updated</span>
@@ -294,14 +427,20 @@ pre.log {
 <main>
   <div class="col-main">
     <section class="card">
-      <h2>Spawn / steer</h2>
+      <h2>Steer</h2>
       <form onsubmit="return doSpawn(event)">
-        <input type="text" id="spawn-name" placeholder="challenge name (e.g. Toy XOR-B64)">
-        <button class="primary">Spawn</button>
+        <div class="field"><input type="text" id="spawn-name"
+          placeholder="Challenge name (e.g. Toy XOR-B64)"></div>
+        <button type="submit" class="filled">
+          <span class="icon-inline">play_arrow</span>Spawn
+        </button>
       </form>
       <form onsubmit="return doMsg(event)">
-        <input type="text" id="msg-text" placeholder="send a message to the coordinator">
-        <button>Send</button>
+        <div class="field"><input type="text" id="msg-text"
+          placeholder="Send a message to the coordinator"></div>
+        <button type="submit" class="outlined">
+          <span class="icon-inline">send</span>Send
+        </button>
       </form>
     </section>
 
@@ -309,7 +448,7 @@ pre.log {
   </div>
 
   <div class="col-side">
-    <section class="card" style="position: sticky; top: 16px;">
+    <section class="card" style="position: sticky; top: 88px;">
       <h2>Events</h2>
       <div class="events" id="events"></div>
     </section>
@@ -328,9 +467,9 @@ const escapeHTML = s => String(s).replace(/[&<>"']/g,
 const expandedLogs = new Set();
 function logKey(chal, model) { return chal + '\\u241F' + model; }
 
-function pill(status) {
+function chip(status) {
   const cls = status === 'running' ? 'run' : (status === 'killed' ? 'killed' : 'done');
-  return `<span class="pill ${cls}">${status}</span>`;
+  return `<span class="chip ${cls}">${status}</span>`;
 }
 
 function renderHeader(s) {
@@ -358,7 +497,8 @@ function renderHeader(s) {
 function renderChallenges(swarms) {
   if (!swarms.length) {
     challengesEl.innerHTML =
-      '<div class="empty">No active swarms. Use the spawn box above to start one.</div>';
+      '<div class="card empty"><span class="icon">flag</span>'
+      + 'No active swarms. Use the spawn box above to start one.</div>';
     return;
   }
   let html = '';
@@ -369,7 +509,7 @@ function renderChallenges(swarms) {
       <div class="challenge-header">
         <span class="title">${cName}</span>
         <span class="meta">${escapeHTML(sw.category || '—')} · ${sw.value || 0}pts</span>
-        ${pill(sw.status)}
+        ${chip(sw.status)}
         <span class="spacer"></span>
         <span class="cost">${fmtUsd(sw.cost_usd)} across ${sw.solvers.length} solvers</span>
       </div>
@@ -391,7 +531,7 @@ function renderChallenges(swarms) {
         <td class="right mono">${fmtUsd(sv.cost_usd)}</td>
         <td>${flagCell}</td>
         <td class="actions">
-          <button onclick="toggleLog('${cNameEnc}','${encodeURIComponent(sv.model)}')">${isOpen ? 'Hide' : 'Log'}</button>
+          <button class="small outlined" onclick="toggleLog('${cNameEnc}','${encodeURIComponent(sv.model)}')">${isOpen ? 'Hide' : 'Log'}</button>
         </td>
       </tr>`;
       if (isOpen) {
@@ -402,7 +542,9 @@ function renderChallenges(swarms) {
     }
     html += `</tbody></table>
       <div class="challenge-footer">
-        <button class="danger" onclick="killSwarm('${cNameEnc}')">Kill swarm</button>
+        <button class="danger" onclick="killSwarm('${cNameEnc}')">
+          <span class="icon-inline">stop_circle</span>Kill swarm
+        </button>
       </div>
     </section>`;
   }
@@ -419,7 +561,7 @@ function appendEvent(e) {
   div.className = `event-row ${cls}`;
   div.innerHTML = `<span class="t">${t}</span>
                    <span class="k">${escapeHTML(e.kind || '')}</span>
-                   <span>${escapeHTML(e.text || '')}</span>`;
+                   <span class="body">${escapeHTML(e.text || '')}</span>`;
   ev.prepend(div);
   while (ev.children.length > 200) ev.lastChild.remove();
 }
