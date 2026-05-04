@@ -99,7 +99,7 @@ async def run_event_loop(
     from backend.web import start_dashboard
     try:
         dash_runner, dash_port = await start_dashboard(
-            deps, RUN_ID, port=deps.msg_port
+            deps, RUN_ID, port=deps.msg_port, host=deps.msg_host,
         )
         deps.event_hub = dash_runner.app["hub"]
     except OSError as e:
@@ -115,7 +115,13 @@ async def run_event_loop(
         len(poller.known_solved),
     )
     if dash_runner is not None:
-        logger.info("Dashboard:  http://127.0.0.1:%d/", dash_port)
+        logger.info("Dashboard:  http://%s:%d/", deps.msg_host, dash_port)
+        if deps.msg_host == "0.0.0.0":
+            logger.warning(
+                "Dashboard bound to 0.0.0.0 — accessible to anyone on this "
+                "machine's LAN/VPN with no auth. Bind 127.0.0.1 via --msg-host "
+                "before exposing to untrusted networks."
+            )
 
     unsolved = poller.known_challenges - poller.known_solved
     initial_msg = (

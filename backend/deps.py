@@ -48,6 +48,7 @@ class CoordinatorDeps:
     max_concurrent_challenges: int = 10
 
     msg_port: int = 0  # 0 = auto-pick free port
+    msg_host: str = "0.0.0.0"  # default: reachable on LAN/VPN; flip to 127.0.0.1 to lock down
 
     # Post-mortem writeup config
     no_writeup: bool = False

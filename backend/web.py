@@ -14,7 +14,12 @@ aiohttp.web). Serves:
   POST /api/spawn               spawn a swarm for a known challenge
                                 (body: {"challenge_name": "..."})
 
-Default-binds to 127.0.0.1 — single-user / localhost-only. No auth.
+Bind defaults to 0.0.0.0 (all interfaces) so an operator on the same
+LAN/VPN can reach the dashboard without SSH-tunneling. There is NO
+authentication — anyone who can reach the port can kill swarms and
+inject messages. Lock this down before exposing on a real CTF
+network: bind to 127.0.0.1 + use `ssh -L`, or put a reverse-proxy
+with auth in front.
 """
 
 from __future__ import annotations
@@ -466,9 +471,14 @@ async def start_dashboard(
     deps: Any,
     run_id: str,
     port: int = 0,
-    host: str = "127.0.0.1",
+    host: str = "0.0.0.0",
 ) -> tuple[web.AppRunner, int]:
     """Start the dashboard. Returns (runner, actual_port).
+
+    Defaults to host="0.0.0.0" so the dashboard is reachable on the
+    local network / VPN without an SSH tunnel. No auth — bind to
+    "127.0.0.1" via the coordinator's --msg-host flag for sensitive
+    deployments.
 
     Caller is responsible for `await runner.cleanup()` on shutdown.
     """

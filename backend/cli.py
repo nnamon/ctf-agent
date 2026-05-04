@@ -45,7 +45,11 @@ def _setup_logging(verbose: bool = False) -> None:
 @click.option("--coordinator-model", default=None, help="Model for coordinator (default: claude-opus-4-6)")
 @click.option("--coordinator", default="claude", type=click.Choice(["claude", "codex"]), help="Coordinator backend")
 @click.option("--max-challenges", default=10, type=int, help="Max challenges solved concurrently")
-@click.option("--msg-port", default=0, type=int, help="Operator message port (0 = auto)")
+@click.option("--msg-port", default=0, type=int, help="Dashboard / operator-message port (0 = auto)")
+@click.option("--msg-host", default="0.0.0.0",
+              help="Dashboard bind address (default 0.0.0.0 = reachable on "
+                   "LAN/VPN). Use 127.0.0.1 for localhost-only — there is "
+                   "no auth, anyone who can reach the port can kill swarms.")
 @click.option("--no-writeup", is_flag=True, help="Skip the post-mortem writeup after each solve")
 @click.option("--writeup-model", default="claude-opus-4-6", help="Model used to generate the post-mortem writeup")
 @click.option("--session", "session_name", default=None,
@@ -91,6 +95,7 @@ def main(
     coordinator: str,
     max_challenges: int,
     msg_port: int,
+    msg_host: str,
     no_writeup: bool,
     writeup_model: str,
     session_name: str | None,
@@ -181,7 +186,7 @@ def main(
     if challenge:
         asyncio.run(_run_single(settings, challenge, model_specs, no_submit, max_challenges, no_writeup, writeup_model))
     else:
-        asyncio.run(_run_coordinator(settings, model_specs, challenges_dir, no_submit, coordinator_model, coordinator, max_challenges, msg_port, no_writeup, writeup_model))
+        asyncio.run(_run_coordinator(settings, model_specs, challenges_dir, no_submit, coordinator_model, coordinator, max_challenges, msg_port, msg_host, no_writeup, writeup_model))
 
 
 async def _run_single(
@@ -353,6 +358,7 @@ async def _run_coordinator(
     coordinator_backend: str,
     max_challenges: int,
     msg_port: int = 0,
+    msg_host: str = "0.0.0.0",
     no_writeup: bool = False,
     writeup_model: str = "claude-opus-4-6",
 ) -> None:
@@ -373,6 +379,7 @@ async def _run_coordinator(
             no_submit=no_submit,
             coordinator_model=coordinator_model,
             msg_port=msg_port,
+            msg_host=msg_host,
             no_writeup=no_writeup,
             writeup_model=writeup_model,
         )
@@ -385,6 +392,7 @@ async def _run_coordinator(
             no_submit=no_submit,
             coordinator_model=coordinator_model,
             msg_port=msg_port,
+            msg_host=msg_host,
             no_writeup=no_writeup,
             writeup_model=writeup_model,
         )

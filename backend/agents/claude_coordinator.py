@@ -112,6 +112,7 @@ async def run_claude_coordinator(
     no_submit: bool = False,
     coordinator_model: str | None = None,
     msg_port: int = 0,
+    msg_host: str = "0.0.0.0",
     no_writeup: bool = False,
     writeup_model: str = "claude-opus-4-6",
 ) -> dict[str, Any]:
@@ -121,6 +122,7 @@ async def run_claude_coordinator(
         no_writeup=no_writeup, writeup_model=writeup_model,
     )
     deps.msg_port = msg_port
+    deps.msg_host = msg_host
 
     mcp_server = _build_coordinator_mcp(deps)
     resolved_model = coordinator_model or "claude-opus-4-6"
