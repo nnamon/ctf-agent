@@ -14,8 +14,32 @@ ffuf               Fast web fuzzer. ffuf -u http://t/FUZZ -w /opt/wordlists/comm
                    VHost: ffuf -u http://t/ -H 'Host: FUZZ.t' -w wordlist -fs 0
 sqlmap             Automated SQL injection. sqlmap -u 'http://t/?id=1' --batch --dbs
                    POST: sqlmap -u 'http://t/login' --data 'u=a&p=b' --batch
-/opt/wordlists/    common.txt, raft-medium-directories.txt, raft-medium-files.txt,
-                   quickhits.txt, passwords-top10k.txt (subset of SecLists)
+nuclei             Template-based vuln scanner. nuclei -u http://t -severity high,critical
+                   First run: nuclei -update-templates (auto-fetches CVE templates).
+mitmproxy          HTTPS interception/replay. mitmproxy --mode reverse:http://t
+                   mitmdump for headless; addons via -s script.py.
+jwt_tool           JWT attacks. jwt_tool <token> -T (tamper), -X k (alg-confusion),
+                   -C -d wordlist (crack HS256 secret), -I -hc kid -hv ../../etc/passwd
+graphql-cop        GraphQL recon (introspection, batching, field suggestions).
+                   graphql-cop -t http://t/graphql
+clairvoyance       GraphQL schema reconstruction when introspection is disabled.
+                   clairvoyance http://t/graphql -o schema.json
+playwright         Headless Chromium for browser-driven challenges (DOM XSS PoCs,
+                   prompt-injection forms, OAuth flows, bot triggers).
+                   python3 -c 'from playwright.sync_api import sync_playwright; ...'
+gau                Historical URL discovery via wayback/CC. gau example.com
+waybackurls        Wayback Machine URL crawler. waybackurls example.com
+/opt/wordlists/    common.txt, raft-medium-{directories,files}.txt, quickhits.txt,
+                   passwords-top10k.txt, passwords-top100k.txt,
+                   rockyou.txt, darkc0de.txt
+                   (some downloads are best-effort; check `ls /opt/wordlists/`).
+
+== DESERIALIZATION GADGETS ==
+ysoserial          Java deserialization payloads. ysoserial CommonsCollections6 'cmd'
+                   Lists chains: ysoserial (no args). Output is raw bytes; pipe to a file.
+ysoserial-net      .NET deserialization payloads. ysoserial-net -g TypeConfuseDelegate \
+                     -f Json.Net -c 'calc.exe'
+                   List gadgets: ysoserial-net --help
 
 == BINARY ANALYSIS ==
 file               Identify file type. file binary
@@ -26,20 +50,70 @@ binwalk            Firmware/embedded extraction. binwalk -e file to extract.
 objdump            Disassembly. objdump -d binary (from binutils).
 readelf            ELF header info. readelf -a binary.
 nm                 Symbol listing. nm binary.
+upx                UPX unpacker. upx -d packed.exe (works on ELF + PE).
+diec / die         Detect-It-Easy: packer / compiler / protector ID.
+                   diec binary  (CLI; falls back to GUI invocation if missing).
+ghidra-headless    Batch RE via Ghidra's analyzeHeadless. Standard recipe:
+                     mkdir /tmp/proj && \
+                     ghidra-headless /tmp/proj P -import binary \
+                       -postScript ListSymbols.java -overwrite
+                   Full Ghidra at /opt/ghidra; pyghidra also available.
+redress            Go binary metadata + symbol/type recovery (uses goretk/gore lib).
+                   redress info binary  /  redress source binary
+patchelf           Modify ELF interpreter / RPATH. patchelf --set-interpreter ./ld.so bin
+yara               Pattern matcher (CLI). yara rules.yar target/ -r
+                   Ruleset preloaded at /opt/yara-rules/.
 
-== JVM / JAVA ==
-javac / java       OpenJDK compiler/runtime (default-jdk).
-javap              Bytecode disassembler. javap -c -p ClassName, javap -v -p Class.
-jar                JAR archive tool. jar tf app.jar, jar xf app.jar.
-jadx               Java/APK decompiler. jadx -d out/ app.jar
+== DECOMPILERS ==
+ghidra-headless    See BINARY ANALYSIS. analyzeHeadless ... -postScript Decompile.java
+ilspycmd           .NET decompiler. ilspycmd app.dll -o out/   (or -lv 8.0 etc.)
+jadx               Java/APK decompiler. jadx -d out/ app.jar / app.apk
                    GUI variant available as jadx-gui (X required).
-keytool            Certificate/keystore tool.
+javap              JVM bytecode disassembler. javap -c -p ClassName, javap -v -p Class.
+uncompyle6         Python <=3.8 .pyc decompiler. uncompyle6 file.pyc
+decompyle3         Python 3.7-3.8 .pyc decompiler (alternative).
+pycdc              Python .pyc decompiler that handles 3.10+. pycdc file.pyc
+                   Disassembly: pycdas file.pyc
+pyinstxtractor-ng  Extract a PyInstaller-packed exe back to .pyc + assets.
+                   python3 -m pyinstxtractor app.exe   (output in app.exe_extracted/)
+
+== PWN / EXPLOITATION ==
+pwntools           CTF exploit framework. from pwn import *
+                   p64/p32, ROP, shellcraft, asm, remote()/process().
+gdb                GNU debugger; pwndbg loaded by default at /opt/pwndbg.
+                   Common: gdb ./binary -ex 'b main' -ex r
+                   pwndbg adds: vmmap, telescope, heap, ropper, search.
+gef                Alternative GDB plugin. Switch in: gdb -x /opt/gef.py ./binary
+gdb-multiarch      Cross-arch debugger. Pair with qemu-user-static -g <port>:
+                     qemu-x86_64-static -g 1234 ./binary    (terminal 1)
+                     gdb-multiarch ./binary -ex 'target remote :1234'
+ROPgadget          ROP gadget finder. ROPgadget --binary binary
+ropper             Alternative gadget finder; finds ones ROPgadget misses.
+                   ropper --file binary --search 'pop ?di'
+one_gadget         libc one-shot RCE finder. one_gadget /lib/x86_64-linux-gnu/libc.so.6
+patchelf           Set interpreter / rpath on a target binary so it loads the
+                   challenge-supplied libc. patchelf --set-interpreter ./ld-2.31.so bin
+pwninit            One-shot pwn-challenge prep: detects libc version, downloads
+                   matching ld.so, patches the binary. pwninit (in challenge dir).
+
+== FUZZING ==
+afl++              Coverage-guided fuzzer. Compile with afl-cc; harness with afl-fuzz.
+                     afl-cc -o target target.c
+                     afl-fuzz -i seeds -o out -- ./target @@
+honggfuzz          Alternative coverage-guided fuzzer.
+                     hfuzz-cc -o target target.c
+                     honggfuzz -i seeds -o out -- ./target ___FILE___
 
 == DEBUGGERS / TRACING ==
-gdb                GNU debugger. gdb binary, then run, break, info, x/...
+gdb / pwndbg       See PWN / EXPLOITATION.
 ltrace             Library call tracer. ltrace ./binary
 strace             System call tracer. strace ./binary
+                   Cross-arch: strace works under qemu-user-static -strace.
 radare2            Reverse engineering. r2 binary, then aaa; pdf @main; afl
+frida              Dynamic instrumentation (Linux/Wine PEs/Android).
+                   frida-trace -i 'recv*' -p <pid>
+                   frida-ps -U / frida-discover / frida-kill
+                   Python API: import frida; frida.attach(pid)
 
 == STEGANOGRAPHY ==
 steghide           Embed/extract in JPEG/BMP/WAV. steghide extract -sf file.jpg
@@ -47,6 +121,8 @@ stegseek           Brute-force steghide passwords. stegseek file.jpg wordlist.tx
 zsteg              PNG/BMP steg detector. zsteg file.png (tries LSB, bit planes, etc.)
 exiftool           EXIF/metadata reader. exiftool file.jpg
 pngcheck           PNG structure checker. pngcheck -v file.png
+stegoveritas       Automated steg pipeline (runs many tools, dumps results).
+                   stegoveritas file.png
 
 == IMAGE / MEDIA ==
 identify           ImageMagick: identify file properties. identify image.png
@@ -55,6 +131,14 @@ montage            ImageMagick: tile images. montage *.png out.png
 tesseract          OCR. tesseract image.png stdout, or --psm 6 for block text.
 ffmpeg             Audio/video processing. ffmpeg -i in.wav out.mp3
 sox                Audio analysis. sox in.wav -n spectrogram -o spec.png
+
+== DOCUMENT MALWARE ==
+olevba             Office macro analysis (oletools). olevba doc.docx
+oledump            OLE structure dump. oledump file.doc
+pdfid              PDF object/keyword summary (Didier Stevens). pdfid file.pdf
+pdf-parser         PDF object inspection / extraction. pdf-parser -o N file.pdf
+pdftotext          Extract PDF text. pdftotext file.pdf -
+pdfimages          Extract embedded images. pdfimages file.pdf prefix
 
 == FILESYSTEM FORENSICS ==
 mmls               Sleuthkit: partition layout. mmls disk.img
@@ -68,6 +152,20 @@ xfs_db             XFS debugger. xfs_db -c "sb 0" -c "p" disk.img
 xfs_repair         XFS repair. xfs_repair -n disk.img (read-only check).
 dcfldd             Forensic dd with hashing. dcfldd if=in of=out hash=md5
 volatility3        Memory forensics. vol -f memdump.raw windows.info
+chntpw             Windows registry editor. chntpw -i SAM (interactive).
+regripper          Windows registry parser with plugins. regripper -r SOFTWARE -p winver
+plaso (psort/log2timeline)
+                   Timeline tooling. log2timeline.py out.plaso disk.img && \
+                     psort.py -o l2tcsv -w timeline.csv out.plaso
+
+== NETWORK FORENSICS ==
+tshark             Wireshark CLI. tshark -r file.pcap -Y 'http.request' -T fields \
+                     -e ip.src -e http.host -e http.request.uri
+                   Decryption (TLS): tshark -r f.pcap -o tls.keylog_file:keys.log
+tcpdump            Packet capture / filter. tcpdump -r file.pcap 'tcp port 80'
+ngrep              grep over packet payloads. ngrep -I file.pcap 'flag{'
+scapy              Python packet crafting/parsing. from scapy.all import *
+                     pkts = rdpcap('f.pcap'); pkts[0].summary()
 
 == CRYPTOGRAPHY ==
 openssl            Crypto swiss army knife. openssl enc, openssl rsa, openssl s_client
@@ -78,9 +176,56 @@ sage               SageMath CAS. sage -c 'from sage.all import *; print(factor(n
 cado-nfs           Number Field Sieve (large factoring/DLP). cado-nfs <N>
 flatter            Fast LLL lattice reduction. flatter < input_matrix
 
+== PASSWORD CRACKING ==
+hashcat            GPU/CPU hash cracker. POCL CPU runtime is installed so it
+                   works headlessly without a GPU.
+                     hashcat -m 0   hash.txt /opt/wordlists/rockyou.txt   # MD5
+                     hashcat -m 1000 hash.txt /opt/wordlists/rockyou.txt  # NTLM
+                     hashcat --help | grep -i <algo>                      # find -m
+john               John the Ripper. john --wordlist=/opt/wordlists/rockyou.txt hash.txt
+                   Format autodetect; --format=descrypt etc. for hints.
+jwt_tool           See WEB PENTESTING — also cracks HS256 secrets.
+
+== SMART CONTRACTS ==
+forge / cast / anvil / chisel
+                   Foundry toolchain. forge build, forge test, anvil (local RPC),
+                   cast call <addr> <sig>, cast send <addr> <sig> <args>.
+slither            Static analyzer for Solidity. slither contract.sol
+mythril            SMT-based symbolic executor. myth analyze contract.sol
+solc-select        Switch solc versions. solc-select install 0.8.20 && \
+                     solc-select use 0.8.20
+web3 (Python)      from web3 import Web3; w3 = Web3(Web3.HTTPProvider('...'))
+
+== ANDROID ==
+jadx               See DECOMPILERS.
+apktool            APK resource decoder/repackager. apktool d app.apk -o out/
+                   Edit smali/, then apktool b out/ -o new.apk
+d2j-dex2jar        Convert .dex/.apk → .jar (then read with jadx/javap).
+                   d2j-dex2jar app.apk -o app.jar
+objection          Frida wrapper for runtime mobile pentesting. objection -g <pkg> explore
+
+== JVM / JAVA ==
+javac / java       OpenJDK compiler/runtime (default-jdk).
+javap              See DECOMPILERS.
+jar                JAR archive tool. jar tf app.jar, jar xf app.jar.
+keytool            Certificate/keystore tool.
+
+== .NET ==
+dotnet             .NET 8 SDK. dotnet run, dotnet build, dotnet --list-sdks
+                   Run a precompiled .NET binary: dotnet path/to/binary.dll
+ilspycmd           See DECOMPILERS.
+ysoserial-net      See DESERIALIZATION GADGETS.
+
 == BUILD TOOLS / RUNTIMES ==
 gcc / g++          C/C++ compiler. gcc -o exploit exploit.c
 make / cmake       Build systems.
+mingw-w64          Cross-compile Windows PEs from this Linux sandbox.
+                     x86_64-w64-mingw32-gcc src.c -o out.exe
+                     i686-w64-mingw32-gcc   src.c -o out32.exe
+go (Go)            Go toolchain at /usr/local/go/bin. go build, go run.
+                   go install <pkg>@latest puts binaries in /root/go/bin/.
+rustc / cargo      Rust toolchain (rustup, stable). cargo new, cargo build --release.
+dotnet             See .NET section.
 jq                 JSON processor. cat file.json | jq '.key'
 nodejs / npm       JavaScript runtime + package manager. node script.js
 sqlite3            SQLite CLI. sqlite3 file.db '.dump'
@@ -102,6 +247,11 @@ trailmark          Trail of Bits' code-graph analyzer (REQUIRES python3.12).
                    print(g.functions_that_raise("ValueError"))
                    '
                    See https://github.com/trailofbits/trailmark for full API.
+bandit             Python-specific SAST. bandit -r src/
+safety             Python dependency CVE check. safety check
+gosec              Go SAST. gosec ./...
+gitleaks           Secret scanner for git history / files. gitleaks detect -s .
+slither            See SMART CONTRACTS.
 
 == ARCHIVE ==
 zip / unzip        ZIP archives.
@@ -123,9 +273,26 @@ gmpy2              Fast multi-precision arithmetic. gmpy2.iroot, gmpy2.invert.
 z3-solver          SMT solver. from z3 import *; s=Solver(); s.add(...); s.check()
 fpylll             LLL/BKZ lattice reduction. from fpylll import IntegerMatrix, LLL.
 angr               Binary analysis framework. import angr; p=angr.Project('bin')
+manticore          Alternative symbolic executor (Trail of Bits).
+                   from manticore.native import Manticore
+triton             Dynamic binary analysis / symbolic execution / taint.
+                   from triton import TritonContext
 capstone           Disassembly engine. from capstone import *
 unicorn            CPU emulator. from unicorn import *
-ropgadget          ROP gadget finder. ROPgadget --binary binary
+keystone           Assembler. from keystone import *
+ROPgadget / ropper See PWN.
+ropper (lib)       Programmatic gadget search. from ropper import RopperService
+lief               Cross-format binary parser/modifier. import lief
+pyelftools         ELF parser. from elftools.elf.elffile import ELFFile
+viv-utils          Vivisect helpers used by capa/floss.
+flare-floss        Obfuscated-string deobfuscator. floss binary
+flare-capa         Capability identifier. capa binary
+yara-python        from yara import compile  (yara CLI also installed).
+qiling             Multi-arch/multi-OS emulator (Windows PE on aarch64).
+speakeasy-emulator PE emulator with full Windows API + CNG.
+frida (Python)     Dynamic instrumentation. import frida (CLI also installed).
+scapy              See NETWORK FORENSICS.
+mitmproxy          See WEB PENTESTING (also a Python lib for addons).
 Pillow             Image processing. from PIL import Image
 pytesseract        Python OCR wrapper. pytesseract.image_to_string(img)
 scipy              Scientific computing. scipy.optimize, scipy.linalg.
@@ -136,6 +303,11 @@ volatility3        Memory forensics framework (Python API).
 torch              PyTorch (CPU). import torch — tensors, neural nets, ML inference.
 keras              Keras deep learning. import keras — model loading, inference.
 PyJWT              JWT encode/decode. import jwt; jwt.encode(payload, key, algorithm='HS256')
+oletools           Office malware analysis. olevba / oleid / msodde / rtfobj
+slither / mythril  Solidity static + symbolic analysis (CLI also installed).
+web3 / eth-abi / eth-utils
+                   Ethereum interaction library suite.
+playwright         Headless browser. async/sync APIs; chromium pre-installed.
 
 == CROSS-ARCH / WINDOWS BINARIES ==
 qemu-*-static      Run foreign-arch Linux ELFs directly. One static binary per
@@ -173,3 +345,8 @@ wine / wine64      Run Windows PE binaries. wine64 file.exe (x86_64 PE),
 - Services on the host are reachable via host.docker.internal (bridge networking).
 - RsaCtfTool is at /opt/RsaCtfTool/
 - CADO-NFS is at /opt/cado-nfs/
+- Ghidra is at /opt/ghidra/  (use ghidra-headless for batch jobs)
+- pwndbg is at /opt/pwndbg/, gef.py at /opt/gef.py
+- YARA rules at /opt/yara-rules/, jwt_tool at /opt/jwt_tool/
+- ysoserial.jar at /opt/ysoserial.jar, ysoserial-net at /opt/ysoserial-net/
+- Didier Stevens suite at /opt/dss/, RegRipper3 at /opt/regripper/

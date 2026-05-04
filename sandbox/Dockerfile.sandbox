@@ -237,6 +237,311 @@ RUN ARCH=$(dpkg --print-architecture) \
     && wineboot --init 2>&1 | tail -5 || true \
     && wineserver -w || true
 
+# ── More system packages (pwn / fuzzing / forensics / crypto / Android) ─────
+# Single apt layer to keep image-layer count down. wireshark debconf preseed
+# avoids interactive "should non-root capture?" prompt during install.
+RUN echo "wireshark-common wireshark-common/install-setuid boolean false" \
+        | debconf-set-selections \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        # Pwn / patch
+        patchelf upx-ucl \
+        # Coverage-guided fuzzers (honggfuzz built from source below)
+        afl++ \
+        # Network forensics
+        tshark tcpdump ngrep \
+        # Disk + registry forensics (bulk_extractor not in jammy; use foremost/binwalk)
+        chntpw \
+        # Android (jadx already installed earlier)
+        apktool \
+        # Password cracking + pocl (CPU OpenCL runtime so hashcat works headless)
+        hashcat john \
+        pocl-opencl-icd ocl-icd-libopencl1 \
+        # PE cross-compilation
+        mingw-w64 \
+        # YARA CLI (yara-python already installed; this adds the binary)
+        yara \
+        # PDF analysis
+        poppler-utils \
+        # RegRipper deps
+        libparse-win32registry-perl \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Additional Python libraries — split into themed blocks so a single bad ──
+# transitive pin doesn't tank the whole layer. Risky blocks tolerate failure;
+# the well-behaved core block does not.
+# (angr/capstone/unicorn/ROPgadget/yara-python/lief/pyelftools/keystone already
+# installed in the FLARE block above.)
+
+# Core: pure-python / well-wheeled. Failure here IS fatal.
+RUN python3 -m pip install --no-cache-dir \
+    angr-utils \
+    ropper \
+    uncompyle6 decompyle3 pyinstxtractor-ng \
+    pyjwt \
+    clairvoyance \
+    oletools \
+    bandit safety
+
+# Network + dynamic instrumentation.
+RUN python3 -m pip install --no-cache-dir \
+    scapy mitmproxy frida-tools objection
+
+# Symbolic execution complements. manticore/triton occasionally hit numpy
+# ABI issues on arm64 py3.10 — non-fatal so we can still ship the rest.
+RUN python3 -m pip install --no-cache-dir manticore triton \
+    || echo "manticore/triton install failed (non-fatal)"
+
+# Smart-contract Python stack — split per-tool so one bad transitive doesn't
+# wipe out all four CLIs. Foundry CLI is still the primary path; these are
+# convenience extras.
+RUN set +e; \
+    for pkg in slither-analyzer solc-select web3 eth-abi eth-utils; do \
+      python3 -m pip install --no-cache-dir "$pkg" || echo "$pkg install failed (non-fatal)"; \
+    done; \
+    true
+# mythril needs an older z3-solver pin and conflicts; install in its own layer.
+RUN python3 -m pip install --no-cache-dir mythril \
+    || echo "mythril install failed (non-fatal — slither covers most static analysis)"
+
+# Steg automation — heavy installer, sometimes unavailable.
+RUN python3 -m pip install --no-cache-dir stegoveritas \
+    || echo "stegoveritas install failed (non-fatal)"
+
+# ── honggfuzz (build from source — not packaged in jammy) ───────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libbfd-dev libunwind-dev libblocksruntime-dev clang \
+    && rm -rf /var/lib/apt/lists/* \
+    && git clone --depth=1 https://github.com/google/honggfuzz /tmp/hf \
+    && cd /tmp/hf && make -j$(nproc) && make install \
+    && cd / && rm -rf /tmp/hf \
+    || echo "honggfuzz build failed (non-fatal)"
+
+# ── graphql-cop (no pip package; clone + wrapper script) ────────────────────
+RUN git clone --depth=1 https://github.com/dolevf/graphql-cop.git /opt/graphql-cop \
+    && python3 -m pip install --no-cache-dir -r /opt/graphql-cop/requirements.txt \
+    && printf '#!/bin/bash\nexec python3 /opt/graphql-cop/graphql-cop.py "$@"\n' \
+       > /usr/local/bin/graphql-cop \
+    && chmod +x /usr/local/bin/graphql-cop \
+    || echo "graphql-cop install failed (non-fatal)"
+
+# ── pycdc (modern Python decompiler — supports 3.10+ where uncompyle6 fails) ─
+RUN git clone --depth=1 https://github.com/zrax/pycdc /tmp/pycdc \
+    && cd /tmp/pycdc && cmake . && make -j$(nproc) \
+    && cp pycdc pycdas /usr/local/bin/ \
+    && rm -rf /tmp/pycdc
+
+# ── pwndbg (default GDB plugin — heap, vmmap, telescope, ROP) ────────────────
+RUN git clone --depth=1 https://github.com/pwndbg/pwndbg /opt/pwndbg \
+    && cd /opt/pwndbg && ./setup.sh || echo "pwndbg setup had warnings"
+
+# ── gef (alternative GDB plugin — kept side-by-side with pwndbg) ─────────────
+# Loaded explicitly via: gdb -x /opt/gef.py
+RUN curl -fsSL -o /opt/gef.py https://gef.blah.cat/py || true
+
+# ── one_gadget (libc one-shot RCE finder) ────────────────────────────────────
+RUN gem install one_gadget
+
+# ── dex2jar (Android: convert .dex/.apk → .jar for jadx/javap) ───────────────
+RUN curl -fsSL "https://github.com/pxb1988/dex2jar/releases/download/v2.4/dex-tools-v2.4.zip" \
+        -o /tmp/d2j.zip \
+    && unzip -q /tmp/d2j.zip -d /opt/ \
+    && mv /opt/dex-tools-v2.4 /opt/dex2jar \
+    && chmod +x /opt/dex2jar/*.sh \
+    && for s in /opt/dex2jar/d2j-*.sh; do \
+         ln -s "$s" "/usr/local/bin/$(basename "$s" .sh)"; \
+       done \
+    && rm /tmp/d2j.zip
+
+# ── Ghidra full standalone (analyzeHeadless, batch RE recipes) ──────────────
+# Java already installed earlier (default-jdk-headless).
+RUN curl -fsSL \
+      "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.2.1_build/ghidra_11.2.1_PUBLIC_20241105.zip" \
+      -o /tmp/ghidra.zip \
+    && unzip -q /tmp/ghidra.zip -d /opt/ \
+    && mv /opt/ghidra_11.2.1_PUBLIC /opt/ghidra \
+    && ln -s /opt/ghidra/support/analyzeHeadless /usr/local/bin/ghidra-headless \
+    && rm /tmp/ghidra.zip
+
+# ── Detect-It-Easy (packer / compiler / protector identification) ────────────
+# Skip silently if no release available for the build arch.
+RUN ARCH=$(dpkg --print-architecture) \
+    && case "$ARCH" in \
+         amd64) DIE_DEB="die_3.10_Ubuntu_22.04_amd64.deb" ;; \
+         arm64) DIE_DEB="die_3.10_Ubuntu_22.04_arm64.deb" ;; \
+         *)     DIE_DEB="" ;; \
+       esac \
+    && if [ -n "$DIE_DEB" ]; then \
+         curl -fsSL "https://github.com/horsicq/DIE-engine/releases/download/3.10/$DIE_DEB" \
+              -o /tmp/die.deb \
+           && (apt-get update \
+                && apt-get install -y --no-install-recommends /tmp/die.deb \
+                && rm -rf /var/lib/apt/lists/*) \
+           || echo "DiE install failed (non-fatal)"; \
+         rm -f /tmp/die.deb; \
+       else \
+         echo "DiE: no release for $ARCH — skipping"; \
+       fi
+
+# ── pwninit (one-shot pwn challenge prep — patches binary, sets RPATH) ───────
+# Use the pre-built x86_64 release on amd64; build from source otherwise.
+RUN ARCH=$(dpkg --print-architecture) \
+    && if [ "$ARCH" = "amd64" ]; then \
+         curl -fsSL https://github.com/io12/pwninit/releases/latest/download/pwninit \
+              -o /usr/local/bin/pwninit \
+           && chmod +x /usr/local/bin/pwninit; \
+       else \
+         echo "pwninit: building from source for $ARCH (cargo install) — see Rust block below"; \
+       fi
+
+# ── Go toolchain (powers nuclei / gore / redress / gau / waybackurls / gosec / gitleaks) ──
+RUN ARCH=$(dpkg --print-architecture) \
+    && case "$ARCH" in amd64) GOA=amd64 ;; arm64) GOA=arm64 ;; *) GOA=amd64 ;; esac \
+    && curl -fsSL "https://go.dev/dl/go1.23.4.linux-${GOA}.tar.gz" -o /tmp/go.tgz \
+    && tar -C /usr/local -xzf /tmp/go.tgz \
+    && rm /tmp/go.tgz
+ENV PATH="/usr/local/go/bin:/root/go/bin:$PATH"
+ENV GOPATH=/root/go
+
+# ── Go-installed tools ───────────────────────────────────────────────────────
+# Per-tool || true so one upstream rename doesn't tank the whole layer.
+# (gore moved to library-only; the user-facing CLI is redress.)
+RUN set +e; \
+    LD='-ldflags=-s -w'; \
+    go install "$LD" github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest || echo "nuclei install failed"; \
+    go install "$LD" github.com/goretk/redress@latest || echo "redress install failed"; \
+    go install "$LD" github.com/lc/gau/v2/cmd/gau@latest || echo "gau install failed"; \
+    go install "$LD" github.com/tomnomnom/waybackurls@latest || echo "waybackurls install failed"; \
+    go install "$LD" github.com/securego/gosec/v2/cmd/gosec@latest || echo "gosec install failed"; \
+    go install "$LD" github.com/zricethezav/gitleaks/v8@latest || echo "gitleaks install failed"; \
+    true
+
+# ── Rust toolchain + cargo-installed tools ──────────────────────────────────
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+       | sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path
+ENV PATH="/root/.cargo/bin:$PATH"
+RUN ARCH=$(dpkg --print-architecture) \
+    && if [ "$ARCH" != "amd64" ]; then \
+         cargo install pwninit --locked || echo "pwninit cargo build failed (non-fatal)"; \
+       fi
+
+# ── .NET SDK + ILSpy decompiler (also runs ysoserial.net) ────────────────────
+# .NET SDK install is fatal; ilspycmd install is non-fatal because recent
+# nuget packages of ilspycmd have shipped a malformed DotnetToolSettings.xml.
+# We try the latest first, then fall back to a known-good 8.x release.
+RUN curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb \
+        -o /tmp/ms.deb \
+    && dpkg -i /tmp/ms.deb \
+    && rm /tmp/ms.deb \
+    && apt-get update && apt-get install -y --no-install-recommends dotnet-sdk-8.0 \
+    && rm -rf /var/lib/apt/lists/*
+ENV PATH="/root/.dotnet/tools:$PATH"
+RUN dotnet tool install -g ilspycmd \
+      || dotnet tool install -g ilspycmd --version 8.2.0.7535 \
+      || echo "ilspycmd install failed (non-fatal — Ghidra/dnSpy alternatives available)"
+
+# ── ysoserial (Java deserialization gadget chains) ──────────────────────────
+RUN curl -fsSL \
+      "https://github.com/frohoff/ysoserial/releases/download/v0.0.6/ysoserial-all.jar" \
+      -o /opt/ysoserial.jar \
+    && printf '#!/bin/bash\nexec java -jar /opt/ysoserial.jar "$@"\n' \
+       > /usr/local/bin/ysoserial \
+    && chmod +x /usr/local/bin/ysoserial
+
+# ── ysoserial.net (.NET deserialization) ────────────────────────────────────
+# Asset names vary (sha-suffixed zip); take the first .zip in the latest release.
+RUN URL=$(curl -fsSL https://api.github.com/repos/pwntester/ysoserial.net/releases/latest \
+           | jq -r '.assets[] | select(.name | endswith(".zip")).browser_download_url' | head -1) \
+    && if [ -n "$URL" ] && [ "$URL" != "null" ]; then \
+         curl -fsSL "$URL" -o /tmp/ysoserial-net.zip \
+           && mkdir -p /opt/ysoserial-net \
+           && unzip -q /tmp/ysoserial-net.zip -d /opt/ysoserial-net \
+           && rm /tmp/ysoserial-net.zip \
+           && BIN=$(find /opt/ysoserial-net -maxdepth 4 \
+                       \( -name 'ysoserial.dll' -o -name 'ysoserial.exe' \) \
+                       | head -1) \
+           && if [ -n "$BIN" ]; then \
+                printf '#!/bin/bash\nexec dotnet %s "$@"\n' "$BIN" \
+                  > /usr/local/bin/ysoserial-net \
+                && chmod +x /usr/local/bin/ysoserial-net; \
+              else \
+                echo "ysoserial-net: no .dll/.exe found in archive"; \
+              fi; \
+       else \
+         echo "ysoserial.net: no matching release found — skipping"; \
+       fi
+
+# ── Foundry (Ethereum dev: forge / cast / anvil / chisel) ───────────────────
+RUN curl -fsSL https://foundry.paradigm.xyz | bash \
+    && /root/.foundry/bin/foundryup
+ENV PATH="/root/.foundry/bin:$PATH"
+
+# ── jwt_tool (JWT attacks: alg confusion, kid injection, weak secret crack) ──
+RUN git clone --depth=1 https://github.com/ticarpi/jwt_tool /opt/jwt_tool \
+    && python3 -m pip install --no-cache-dir -r /opt/jwt_tool/requirements.txt \
+    && printf '#!/bin/bash\nexec python3 /opt/jwt_tool/jwt_tool.py "$@"\n' \
+       > /usr/local/bin/jwt_tool \
+    && chmod +x /usr/local/bin/jwt_tool
+
+# ── RegRipper 3.0 (Windows registry forensics) ──────────────────────────────
+RUN git clone --depth=1 https://github.com/keydet89/RegRipper3.0 /opt/regripper \
+    && printf '#!/bin/bash\ncd /opt/regripper && exec perl rip.pl "$@"\n' \
+       > /usr/local/bin/regripper \
+    && chmod +x /usr/local/bin/regripper
+
+# ── plaso / log2timeline (event-log + artifact timeline) ────────────────────
+# Heavy Python deps; allowed to fail without tanking the build.
+RUN python3 -m pip install --no-cache-dir plaso || echo "plaso install failed (non-fatal)"
+
+# ── Didier Stevens PDF tools (pdfid, pdf-parser) ────────────────────────────
+RUN git clone --depth=1 https://github.com/DidierStevens/DidierStevensSuite /opt/dss \
+    && for tool in pdfid pdf-parser oledump; do \
+         if [ -f "/opt/dss/${tool}.py" ]; then \
+           printf '#!/bin/bash\nexec python3 /opt/dss/%s.py "$@"\n' "$tool" \
+             > "/usr/local/bin/$tool"; \
+           chmod +x "/usr/local/bin/$tool"; \
+         fi; \
+       done
+
+# ── Playwright + headless Chromium (browser-driven web challenges) ──────────
+RUN python3 -m pip install --no-cache-dir playwright \
+    && playwright install --with-deps chromium
+
+# ── YARA rules (Yara-Rules/rules — preloaded ruleset) ───────────────────────
+RUN git clone --depth=1 https://github.com/Yara-Rules/rules /opt/yara-rules
+
+# ── Wordlists: rockyou.txt + extended SecLists Passwords ────────────────────
+# Per-line || true so SecLists path drift doesn't tank the layer; rockyou is
+# the only one we'd really miss.
+RUN mkdir -p /opt/wordlists \
+    && set +e \
+    && curl -fsSL \
+        "https://github.com/brannondorsey/naive-hashcat/releases/download/data/rockyou.txt" \
+        -o /opt/wordlists/rockyou.txt \
+        || echo "rockyou download failed (non-fatal)" \
+    && curl -fsSL \
+        "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/xato-net-10-million-passwords-100000.txt" \
+        -o /opt/wordlists/passwords-top100k.txt \
+        || echo "top-100k download failed (non-fatal)" \
+    && curl -fsSL \
+        "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/darkc0de.txt" \
+        -o /opt/wordlists/darkc0de.txt \
+        || echo "darkc0de download failed (non-fatal)" \
+    && set -e \
+    && ls -la /opt/wordlists/
+
+# ── Wordlist URL fix-up ─────────────────────────────────────────────────────
+# SecLists renamed `10-million-password-list-top-N.txt` to
+# `xato-net-10-million-passwords-N.txt`. Re-download with the new names
+# in a trailing layer so the earlier wordlist layers stay cached.
+RUN set +e; \
+    curl -fsSL "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/xato-net-10-million-passwords-10000.txt" \
+        -o /opt/wordlists/passwords-top10k.txt \
+        || echo "passwords-top10k re-download failed (non-fatal)"; \
+    curl -fsSL "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Passwords/Common-Credentials/xato-net-10-million-passwords-100000.txt" \
+        -o /opt/wordlists/passwords-top100k.txt \
+        || echo "passwords-top100k re-download failed (non-fatal)"; \
+    true
+
 # ── Tools reference ──────────────────────────────────────────────────────────
 COPY sandbox/sandbox-tools.txt /tools.txt
 
