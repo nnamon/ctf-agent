@@ -8,7 +8,10 @@ import logging
 import shlex
 import tarfile
 import tempfile
+import time
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +20,12 @@ import aiodocker
 logger = logging.getLogger(__name__)
 
 CONTAINER_LABEL = "ctf-agent"
+RUN_LABEL = "ctf-agent.run"
+# Per-process run-id. Containers are tagged with this so concurrent
+# ctf-agent invocations don't trample each other's sandboxes during cleanup.
+# Operators can `docker ps --filter label=ctf-agent.run=<RUN_ID>` to inspect
+# one run's containers from any other shell.
+RUN_ID = uuid.uuid4().hex[:12]
 
 # Concurrency control
 _start_semaphore: asyncio.Semaphore | None = None
@@ -46,8 +55,64 @@ async def _track_stop() -> None:
         _active_count = max(0, _active_count - 1)
 
 
+async def _delete_matching(filters: dict[str, list[str]]) -> int:
+    """Delete every container matching the given Docker label filters.
+
+    Returns the count actually deleted. Errors per-container are swallowed —
+    individual delete failures shouldn't tank the whole sweep.
+    """
+    deleted = 0
+    try:
+        docker = aiodocker.Docker()
+        try:
+            containers = await docker.containers.list(all=True, filters=filters)
+            for c in containers:
+                try:
+                    await c.delete(force=True)
+                    deleted += 1
+                except Exception:
+                    pass
+        finally:
+            await docker.close()
+    except Exception as e:
+        logger.warning("Container cleanup failed (filters=%s): %s", filters, e)
+    return deleted
+
+
 async def cleanup_orphan_containers() -> None:
-    """Kill any leftover ctf-agent containers from a previous run."""
+    """Kill leftover containers from THIS run only.
+
+    Scoped via RUN_LABEL=RUN_ID so concurrent ctf-agent invocations don't
+    delete each other's sandboxes. Genuine orphans from crashed-but-no-longer
+    running processes are NOT cleaned up here — use cleanup_stale_containers
+    or `ctf-agent cleanup --age N` for that.
+    """
+    deleted = await _delete_matching(
+        {"label": [CONTAINER_LABEL, f"{RUN_LABEL}={RUN_ID}"]},
+    )
+    if deleted:
+        logger.info("Cleaned up %d container(s) from this run", deleted)
+
+
+async def cleanup_run_containers(run_id: str) -> int:
+    """Kill all ctf-agent containers belonging to a given run-id."""
+    deleted = await _delete_matching(
+        {"label": [CONTAINER_LABEL, f"{RUN_LABEL}={run_id}"]},
+    )
+    if deleted:
+        logger.info("Cleaned up %d container(s) from run %s", deleted, run_id)
+    return deleted
+
+
+async def cleanup_stale_containers(older_than_hours: float = 6.0) -> int:
+    """Kill ctf-agent containers older than the cutoff, regardless of run-id.
+
+    Use this to mop up SIGKILL-survivor containers from crashed processes,
+    without disturbing containers from active concurrent runs. Younger
+    containers are presumed to belong to a still-running ctf-agent.
+    """
+    cutoff = time.time() - (older_than_hours * 3600)
+    deleted = 0
     try:
         docker = aiodocker.Docker()
         try:
@@ -57,15 +122,37 @@ async def cleanup_orphan_containers() -> None:
             )
             for c in containers:
                 try:
-                    await c.delete(force=True)
+                    info = await c.show()
+                    # "Created" looks like "2024-01-15T10:30:00.123456789Z"
+                    raw = info.get("Created", "").rstrip("Z").split(".")[0]
+                    if not raw:
+                        continue
+                    ts = datetime.fromisoformat(raw).replace(tzinfo=timezone.utc).timestamp()
+                    if ts < cutoff:
+                        await c.delete(force=True)
+                        deleted += 1
                 except Exception:
                     pass
-            if containers:
-                logger.info("Cleaned up %d orphan container(s)", len(containers))
         finally:
             await docker.close()
     except Exception as e:
-        logger.warning("Orphan cleanup failed: %s", e)
+        logger.warning("Stale cleanup failed: %s", e)
+    if deleted:
+        logger.info("Cleaned up %d stale container(s) (>%sh old)", deleted, older_than_hours)
+    return deleted
+
+
+async def cleanup_all_containers() -> int:
+    """Nuke every ctf-agent-labeled container, regardless of run-id or age.
+
+    Replicates the pre-RUN_ID startup behaviour. Use only when no other
+    ctf-agent processes are running — otherwise prefer cleanup_stale_containers
+    or cleanup_run_containers.
+    """
+    deleted = await _delete_matching({"label": [CONTAINER_LABEL]})
+    if deleted:
+        logger.info("Cleaned up %d ctf-agent container(s)", deleted)
+    return deleted
 
 
 @dataclass
@@ -128,7 +215,7 @@ class DockerSandbox:
                 "Cmd": ["sleep", "infinity"],
                 "WorkingDir": "/challenge",
                 "Tty": False,
-                "Labels": {CONTAINER_LABEL: "true"},
+                "Labels": {CONTAINER_LABEL: "true", RUN_LABEL: RUN_ID},
                 "HostConfig": {
                     "Binds": binds,
                     "ExtraHosts": ["host.docker.internal:host-gateway"],

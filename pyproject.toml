@@ -21,6 +21,7 @@ dependencies = [
 ctf-solve = "backend.cli:main"
 ctf-msg = "backend.cli:msg"
 ctf-status = "backend.cli_status:status"
+ctf-cleanup = "backend.cli:cleanup"
 
 [build-system]
 requires = ["hatchling"]

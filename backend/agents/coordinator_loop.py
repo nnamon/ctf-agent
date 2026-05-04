@@ -95,8 +95,10 @@ async def run_event_loop(
     # Start operator message HTTP endpoint
     msg_server = await _start_msg_server(deps.operator_inbox, deps.msg_port)
 
+    from backend.sandbox import RUN_ID
     logger.info(
-        "Coordinator starting: %d models, %d challenges, %d solved",
+        "Coordinator starting (run %s): %d models, %d challenges, %d solved",
+        RUN_ID,
         len(deps.model_specs),
         len(poller.known_challenges),
         len(poller.known_solved),

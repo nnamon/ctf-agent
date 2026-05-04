@@ -93,7 +93,10 @@ def main(
 
     model_specs = list(models) if models else list(DEFAULT_MODELS)
 
+    from backend.sandbox import RUN_ID
     console.print("[bold]CTF Agent v2[/bold]")
+    console.print(f"  Run ID: [cyan]{RUN_ID}[/cyan]   "
+                  f"[dim](docker ps --filter label=ctf-agent.run={RUN_ID})[/dim]")
     console.print(f"  CTFd: {settings.ctfd_url}")
     console.print(f"  Models: {', '.join(model_specs)}")
     console.print(f"  Image: {settings.sandbox_image}")
@@ -261,6 +264,105 @@ async def _run_coordinator(
     for challenge, data in results.get("results", {}).items():
         console.print(f"  {challenge}: {data.get('flag', 'no flag')}")
     console.print(f"\n[bold]Total cost: ${results.get('total_cost_usd', 0):.2f}[/bold]")
+
+
+def _parse_age(s: str) -> float:
+    """Parse a duration like '6h', '30m', '1d', '2.5h' into hours."""
+    s = s.strip().lower()
+    if not s:
+        raise click.BadParameter("empty age")
+    unit = s[-1]
+    try:
+        n = float(s[:-1] if unit in "hmds" else s)
+    except ValueError as e:
+        raise click.BadParameter(f"can't parse age {s!r}") from e
+    if unit == "h" or unit not in "hmds":
+        return n
+    if unit == "m":
+        return n / 60
+    if unit == "d":
+        return n * 24
+    if unit == "s":
+        return n / 3600
+    raise click.BadParameter(f"unknown unit {unit!r}")
+
+
+@click.command()
+@click.option("--run", "run_id", default=None,
+              help="Delete containers for a specific run-id (e.g. 'a3f4b1c2d5e6'). "
+                   "Find it in the startup banner or via "
+                   "`docker ps --filter label=ctf-agent.run`.")
+@click.option("--age", "age", default=None,
+              help="Delete containers older than this duration (e.g. '6h', '30m', '1d'). "
+                   "Useful for mopping up SIGKILL-survivor containers without "
+                   "disturbing concurrent runs.")
+@click.option("--all", "all_", is_flag=True,
+              help="Nuke every ctf-agent-labeled container regardless of run-id "
+                   "or age. Replicates the pre-run-id startup behaviour. Use only "
+                   "when no other ctf-agent processes are running.")
+def cleanup(run_id: str | None, age: str | None, all_: bool) -> None:
+    """Reap ctf-agent sandbox containers.
+
+    Pass exactly one of --run / --age / --all. Without arguments, prints
+    a summary of currently-tagged containers grouped by run-id.
+    """
+    import asyncio
+    from backend.sandbox import (
+        cleanup_all_containers,
+        cleanup_run_containers,
+        cleanup_stale_containers,
+        CONTAINER_LABEL,
+        RUN_LABEL,
+    )
+
+    chosen = sum(bool(x) for x in (run_id, age, all_))
+    if chosen > 1:
+        console.print("[red]Pick only one of --run / --age / --all.[/red]")
+        sys.exit(2)
+
+    if chosen == 0:
+        # Default: list current containers grouped by run-id.
+        async def _list() -> None:
+            import aiodocker
+            docker = aiodocker.Docker()
+            try:
+                containers = await docker.containers.list(
+                    all=True, filters={"label": [CONTAINER_LABEL]}
+                )
+                if not containers:
+                    console.print("No ctf-agent containers found.")
+                    return
+                by_run: dict[str, list[str]] = {}
+                for c in containers:
+                    info = await c.show()
+                    rid = info.get("Config", {}).get("Labels", {}).get(RUN_LABEL, "(unlabeled)")
+                    by_run.setdefault(rid, []).append(info["Id"][:12])
+                for rid, ids in sorted(by_run.items()):
+                    console.print(f"[cyan]{rid}[/cyan]: {len(ids)} container(s)")
+                    for cid in ids[:5]:
+                        console.print(f"    {cid}")
+                    if len(ids) > 5:
+                        console.print(f"    ... and {len(ids) - 5} more")
+            finally:
+                await docker.close()
+        asyncio.run(_list())
+        return
+
+    if all_:
+        n = asyncio.run(cleanup_all_containers())
+        console.print(f"[green]Deleted {n} container(s).[/green]")
+        return
+
+    if run_id:
+        n = asyncio.run(cleanup_run_containers(run_id))
+        console.print(f"[green]Deleted {n} container(s) from run {run_id}.[/green]")
+        return
+
+    if age:
+        hours = _parse_age(age)
+        n = asyncio.run(cleanup_stale_containers(older_than_hours=hours))
+        console.print(f"[green]Deleted {n} container(s) older than {age}.[/green]")
+        return
 
 
 @click.command()
