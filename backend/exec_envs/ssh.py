@@ -109,9 +109,12 @@ class SSHEnv(ExecEnv):
         except OSError as e:
             logger.warning("Could not chmod identity %s: %s", self.identity_file, e)
 
-        self._ctl_dir = tempfile.mkdtemp(prefix="sshenv-")
-        # %C expands to a hash of (l@h:p, user) so multiple masters can coexist
-        self._ctl_path = os.path.join(self._ctl_dir, "ctl-%C")
+        # ControlPath has a hard ~104 byte limit (sun_path on Linux, even
+        # tighter on macOS where the default tmp dir is /var/folders/.../).
+        # Use a short fixed-name socket under /tmp to stay well under it.
+        # Each instance gets its own dir so multiple SSHEnvs don't collide.
+        self._ctl_dir = tempfile.mkdtemp(prefix="se-", dir="/tmp")
+        self._ctl_path = os.path.join(self._ctl_dir, "s")
 
         master_cmd = [
             "ssh",

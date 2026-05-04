@@ -63,6 +63,32 @@ class PwnCollegeBackend(CTFdSessionBackend):
 
     # Cached metadata for resolved challenges, keyed by `<dojo>/<mod>/<chal>`.
     _challenge_meta: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
+    # CTFd int challenge_id cache keyed by (dojo, module). The dojo plugin
+    # uses one int per module across all its slug-challenges, so this saves
+    # us an HTTP round trip after the first resolve in the module.
+    _module_int_ids: dict[tuple[str, str], int] = field(default_factory=dict, repr=False)
+
+    # ---------- CSRF override ----------
+
+    async def _get_csrf(self) -> str:
+        """Scrape csrfNonce from /dojos.
+
+        The dojo plugin redirects /challenges (301), so the upstream
+        CTFdBackend._get_csrf can't find the nonce. /dojos is the dojo
+        plugin's listing page; same csrfNonce template variable, served
+        as 200, available pre- and post-login.
+        """
+        if self._csrf_token:
+            return self._csrf_token
+        client = await self._ensure_client()
+        resp = await client.get("/dojos")
+        m = re.search(r"csrfNonce':\s*\"([A-Fa-f0-9]+)\"", resp.text)
+        if not m:
+            m = re.search(r'csrfNonce["\']?\s*:\s*["\']([A-Fa-f0-9]+)["\']', resp.text)
+        if not m:
+            raise RuntimeError("Could not find csrfNonce on pwn.college /dojos page")
+        self._csrf_token = m.group(1)
+        return self._csrf_token
 
     # ---------- listing ----------
 
@@ -177,9 +203,18 @@ class PwnCollegeBackend(CTFdSessionBackend):
     async def get_challenge_id(self, name: str) -> int:
         """Resolve `<dojo>/<module>/<challenge>` to the CTFd int challenge_id.
 
-        The dojo modules API gives us slugs only. The int is embedded in
-        the rendered challenge page template as part of the "current
-        challenge" context. We GET that page (authenticated) and pluck it.
+        The dojo plugin uses one underlying CTFd Challenge per *module*, so
+        the int is a per-module constant — the dojo plugin disambiguates
+        which `<challenge_slug>` a flag belongs to via the user's currently-
+        active workspace. The int is embedded in the rendered page template
+        as `<input id="challenge-id" type="hidden" value="...">`, but the
+        page always reflects whichever challenge the user's workspace is
+        on, so we have to make sure the workspace matches BEFORE reading
+        the page.
+
+        We treat the int as a per-module cache: once we've resolved it for
+        any (dojo, module, *) we reuse it across all challenges in that
+        module — saves an extra workspace re-spawn on subsequent calls.
         """
         if name in self._challenge_ids:
             return self._challenge_ids[name]
@@ -192,26 +227,63 @@ class PwnCollegeBackend(CTFdSessionBackend):
         if meta is None:
             raise RuntimeError(f"Challenge {name!r} not found in any configured dojo")
 
+        # Per-module cache lookup
+        module_key = (meta["dojo"], meta["module"])
+        if module_key in self._module_int_ids:
+            chid = self._module_int_ids[module_key]
+            self._challenge_ids[name] = chid
+            return chid
+
+        # Make sure the workspace is on a challenge in this dojo+module
+        # before we trust the page's challenge-id. We avoid POSTing if we
+        # can — every /pwncollege_api/v1/docker POST tears down whatever
+        # the workspace is currently running, which is expensive and
+        # disruptive if it's mid-solve.
+        current = await self.current_workspace_challenge()
+        same_module = (
+            current
+            and current["dojo"] == meta["dojo"]
+            and current["module"] == meta["module"]
+        )
+        if not same_module:
+            logger.info(
+                "get_challenge_id: spawning workspace for %s/%s/%s (was %s)",
+                meta["dojo"], meta["module"], meta["challenge"], current,
+            )
+            await self.start_workspace(
+                meta["dojo"], meta["module"], meta["challenge"]
+            )
+
         await self._ensure_logged_in()
         client = await self._ensure_client()
-        page_url = f"/dojo/{meta['dojo']}/{meta['module']}/{meta['challenge']}/"
-        resp = await client.get(page_url)
+        # The dojo blueprint registers the challenge view at the bare
+        # /<dojo>/<module>/<challenge>/ path (without a /dojo/ prefix).
+        # /dojo/<id>/* is reserved for admin/join/etc, NOT the listing.
+        page_url = f"/{meta['dojo']}/{meta['module']}/{meta['challenge']}/"
+        resp = await client.get(page_url, headers=self._base_headers())
         if resp.status_code != 200:
             raise RuntimeError(
                 f"Could not load challenge page {page_url}: HTTP {resp.status_code}"
             )
 
-        # The Jinja template renders challenge_info() (see
-        # dojo_plugin/pages/dojo.py) with both `challenge_id` (int) and
-        # `challenge_reference_id` (slug). Match a quoted-or-unquoted int
-        # following `challenge_id`.
+        # The dojo theme renders the int challenge_id as a hidden input:
+        #   <input id="challenge-id" type="hidden" value="18402">
+        # alongside the slug ones (id="module" / id="challenge"). Pluck
+        # the int; submission goes through standard CTFd /attempt with it.
         m = re.search(
-            r'["\']challenge_id["\']\s*:\s*(\d+)',
+            r'id=["\']challenge-id["\']\s+type=["\']hidden["\']\s+value=["\'](\d+)["\']',
             resp.text,
         )
         if not m:
-            # Fallback: some themes use a hidden input or data-* attribute.
-            m = re.search(r'data-challenge-id\s*=\s*["\'](\d+)["\']', resp.text)
+            # Looser fallback in case attribute order changes:
+            m = re.search(
+                r'<input[^>]*id=["\']challenge-id["\'][^>]*value=["\'](\d+)["\']',
+                resp.text,
+            )
+        if not m:
+            # Last-resort fallback for older theme variants that exposed it
+            # as a JSON value in template context.
+            m = re.search(r'["\']challenge_id["\']\s*:\s*(\d+)', resp.text)
         if not m:
             raise RuntimeError(
                 f"Could not find numeric challenge_id on {page_url}. "
@@ -220,6 +292,7 @@ class PwnCollegeBackend(CTFdSessionBackend):
 
         chid = int(m.group(1))
         self._challenge_ids[name] = chid
+        self._module_int_ids[(meta["dojo"], meta["module"])] = chid
         return chid
 
     async def submit_flag(self, challenge_name: str, flag: str) -> SubmitResult:
@@ -242,15 +315,16 @@ class PwnCollegeBackend(CTFdSessionBackend):
         """
         if not public_key.strip():
             raise ValueError("upload_ssh_key: empty key")
-        # /pwncollege_api/v1/keys is the dojo plugin's endpoint, not the
-        # CTFd /api/v1 one. Use the raw client + CSRF.
+        # /pwncollege_api/v1/ssh_key is the dojo plugin's endpoint (note the
+        # underscore — the namespace is registered as "/ssh_key"). Not to
+        # be confused with the standard CTFd /api/v1, which doesn't exist.
         await self._ensure_logged_in()
         client = await self._ensure_client()
         headers = self._base_headers()
         if not self.token:
             headers["CSRF-Token"] = await self._get_csrf()
         resp = await client.post(
-            "/pwncollege_api/v1/keys",
+            "/pwncollege_api/v1/ssh_key",
             json={"ssh_key": public_key.strip()},
             headers=headers,
         )

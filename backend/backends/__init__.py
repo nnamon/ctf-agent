@@ -82,6 +82,8 @@ def make_backend(
     elif kind in ("pwncollege", "pwn.college", "dojo"):
         inner = PwnCollegeBackend(
             base_url=base_url or "https://pwn.college",
+            username=username,
+            password=password,
             session_cookie=session_cookie,
             dojos=list(pwncollege_dojos or []),
         )
