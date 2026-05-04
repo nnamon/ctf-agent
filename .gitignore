@@ -34,3 +34,13 @@ uv.lock
 workspace/
 codex-schema-*/
 .claude/scheduled_tasks.lock
+
+# Per-session state (challenges/, writeups/, runs/, logs/, .env, ...)
+# Each operator's sessions are local — never commit their CTFd creds,
+# attempt logs, or solver workspaces.
+sessions/
+.ctf-session
+
+# Session-bootstrap artifact: an admin token issued by toy-challenges
+# bootstrap.py is local-only and should not be committed.
+toy-challenges/token.txt
