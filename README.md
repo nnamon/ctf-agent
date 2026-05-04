@@ -1,5 +1,8 @@
 # CTF Agent
 
+[![sandbox build](https://github.com/nnamon/ctf-agent/actions/workflows/sandbox-build.yml/badge.svg?branch=main)](https://github.com/nnamon/ctf-agent/actions/workflows/sandbox-build.yml)
+[![docker hub](https://img.shields.io/docker/v/nnamon/ctf-agent?label=docker%20hub&logo=docker&sort=semver)](https://hub.docker.com/r/nnamon/ctf-agent)
+
 Autonomous CTF (Capture The Flag) solver that races multiple AI models against challenges in parallel. Built in a weekend, we used it to solve all 52/52 challenges and win **1st place at BSidesSF 2026 CTF**.
 
 Built by [Veria Labs](https://verialabs.com), founded by members of [.;,;.](https://ctftime.org/team/222911) (smiley), the [#1 US CTF team on CTFTime in 2024 and 2025](https://ctftime.org/stats/2024/US). We build AI agents that find and exploit real security vulnerabilities for large enterprises.
