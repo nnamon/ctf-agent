@@ -50,7 +50,7 @@ docker compose up -d
 
 # 5. Configure ctf-agent to use this CTFd
 cd ..
-ctf-session create toys --ctfd-url http://localhost:8000 --quota-usd 1.00
+ctf-session create toys --ctfd-url http://localhost:12001 --quota-usd 1.00
 ctf-session use toys
 echo "CTFD_TOKEN=$(cat toy-challenges/token.txt)" >> sessions/toys/.env
 

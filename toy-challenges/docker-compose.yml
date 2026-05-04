@@ -13,7 +13,13 @@ services:
     image: ctfd/ctfd:3.7.5
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      # Host port 12001 — picks something high to avoid collisions with the
+      # usual dev ports (8000/8001). Override at run time with
+      #   docker compose run -p PORT:8000 ctfd
+      # or by editing this file; bootstrap.py's CTFD_URL env var keeps the
+      # admin-side URL in sync, but solver-side lookups read from
+      # session.yml's ctfd_url field, so update both if you change this.
+      - "12001:8000"
     environment:
       - SECRET_KEY=ctf-agent-toy-demo-not-a-secret
       - UPLOAD_FOLDER=/var/uploads

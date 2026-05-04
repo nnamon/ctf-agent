@@ -28,7 +28,7 @@ from pathlib import Path
 import requests
 import yaml
 
-CTFD_URL = os.environ.get("CTFD_URL", "http://localhost:8000").rstrip("/")
+CTFD_URL = os.environ.get("CTFD_URL", "http://localhost:12001").rstrip("/")
 ADMIN_NAME = os.environ.get("CTFD_ADMIN_NAME", "admin")
 ADMIN_EMAIL = os.environ.get("CTFD_ADMIN_EMAIL", "admin@example.com")
 ADMIN_PASSWORD = os.environ.get("CTFD_ADMIN_PASSWORD", "admin")

@@ -112,14 +112,17 @@ def main(
     """
     _setup_logging(verbose)
 
-    settings = Settings(sandbox_image=image)
-
-    # Resolve the active session and reroot all path-bearing settings
-    # underneath sessions/<NAME>/. CLI flags retain the final word —
-    # an explicit --attempt-log-path overrides the session-derived default.
+    # Resolve the active session FIRST so we can layer the session's .env
+    # on top of the global .env when constructing Settings.
     from backend.session import SessionContext
     session = SessionContext.resolve(explicit=session_name)
     session.ensure_dirs()
+
+    env_chain = session.env_files_chain()
+    if env_chain:
+        settings = Settings(sandbox_image=image, _env_file=env_chain)
+    else:
+        settings = Settings(sandbox_image=image)
     settings.session_name = session.name
 
     if ctfd_url:

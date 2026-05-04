@@ -67,11 +67,11 @@ async def _pull(
     session_name: str | None, download: bool,
     category_filter: str | None, names_csv: str | None,
 ) -> None:
-    settings = Settings()
-
-    # Resolve session (same logic as ctf-solve so paths line up).
+    # Resolve session first so we can layer its .env on top of the global one.
     session = SessionContext.resolve(explicit=session_name)
     session.ensure_dirs()
+    env_chain = session.env_files_chain()
+    settings = Settings(_env_file=env_chain) if env_chain else Settings()
 
     # Layer credentials: CLI > env > session.yml > class default.
     overlay = session.config or {}

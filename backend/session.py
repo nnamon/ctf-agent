@@ -147,6 +147,25 @@ class SessionContext:
     def session_yml(self) -> Path:
         return self.root / SESSION_YAML
 
+    @property
+    def env_file(self) -> Path:
+        return self.root / ".env"
+
+    def env_files_chain(self, *, include_global: bool = True) -> tuple[str, ...]:
+        """Return the .env file chain to feed to pydantic-settings _env_file.
+
+        Pydantic loads files in order, with later files overriding earlier
+        ones. We put the cwd's global .env first (defaults — API keys,
+        Bedrock creds, sandbox image name) and the session-local .env
+        last so per-CTF overrides win.
+        """
+        chain: list[str] = []
+        if include_global and Path(".env").exists():
+            chain.append(".env")
+        if self.env_file.exists():
+            chain.append(str(self.env_file))
+        return tuple(chain)
+
     # ── Config overlay accessors ──
 
     def get(self, key: str, default: Any = None) -> Any:
