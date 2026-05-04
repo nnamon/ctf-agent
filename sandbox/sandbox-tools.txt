@@ -137,9 +137,36 @@ torch              PyTorch (CPU). import torch — tensors, neural nets, ML infe
 keras              Keras deep learning. import keras — model loading, inference.
 PyJWT              JWT encode/decode. import jwt; jwt.encode(payload, key, algorithm='HS256')
 
+== CROSS-ARCH / WINDOWS BINARIES ==
+qemu-*-static      Run foreign-arch Linux ELFs directly. One static binary per
+                   guest arch — pick by name. Examples:
+                     qemu-aarch64-static ./binary   (ARM64 ELF on amd64 host)
+                     qemu-x86_64-static  ./binary   (x86_64 ELF on arm64 host)
+                     qemu-mips64-static  ./binary   (MIPS64, e.g. router fw)
+                     qemu-arm-static     ./binary   (32-bit ARM, e.g. IoT)
+                     qemu-riscv64-static ./binary   (RISC-V)
+                     qemu-i386-static    ./binary   (32-bit x86)
+                   Cross-arch GDB: `qemu-x86_64-static -g 1234 ./binary`,
+                   then in another shell: `gdb-multiarch ./binary`,
+                   `target remote :1234`. Strace works the same way.
+                   binfmt_misc may also auto-dispatch ./binary directly when
+                   the host kernel has handlers registered (Docker Desktop
+                   normally does); explicit qemu-*-static is the fallback.
+wine / wine64      Run Windows PE binaries. wine64 file.exe (x86_64 PE),
+                   wine file.exe (32-bit PE; available on amd64 sandboxes).
+                   Pre-initialised Wine prefix at /opt/wineprefix.
+                   Headless: WINEDEBUG=-all wine64 file.exe (already default).
+                   On an arm64 sandbox, wine handles ARM PEs natively; x64
+                   PE execution under Wine on arm64 needs box64/FEX (not
+                   installed) — for those, prefer static analysis (Ghidra,
+                   capa, floss) or rebuild the sandbox with --platform
+                   linux/amd64.
+
 == NOTES ==
-- Sandbox runs ARM64. Do NOT execute x86/x86-64 binaries locally.
-  Use Ghidra tools for RE, and interact with remote services for dynamic analysis.
+- The sandbox can execute foreign-arch Linux ELFs via qemu-*-static and
+  Windows PEs via wine/wine64 — see the section above for invocation.
+  Static analysis (Ghidra, radare2, capa, floss, angr) remains the right
+  starting point for non-trivial RE; dynamic analysis is a complement.
 - Need a package not listed? Run `pip install <pkg>` or `uv pip install <pkg>`.
 - Distfiles are at /challenge/distfiles/ (read-only)
 - Write generated/repaired files to /challenge/workspace/ (writable)

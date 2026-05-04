@@ -202,6 +202,41 @@ RUN python3 -m pip install --no-cache-dir \
     speakeasy-emulator \
     qiling
 
+# ── qemu-user-static (foreign-arch Linux ELFs) ───────────────────────────────
+# Lets the agent execute non-host-arch Linux binaries directly: router
+# firmware (MIPS/ARM), embedded crackmes, exotic-arch malware samples.
+# Explicit invocation always works: `qemu-mips64-static ./binary`.
+# Auto-dispatch via binfmt_misc additionally lets `./binary` Just Work when
+# the host kernel has handlers registered (Docker Desktop usually does this
+# automatically); explicit form is the reliable fallback when it doesn't.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        qemu-user-static binfmt-support \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Wine (run Windows PE binaries) ────────────────────────────────────────────
+# wine64 handles x86_64 PEs natively when the sandbox itself runs on amd64.
+# i386 multiarch + wine32 are added only when building for amd64 (the i386
+# package set isn't available on arm64). On an arm64 sandbox, Wine can still
+# load ARM PEs natively; for x86/x86_64 PE coverage on arm64, rebuild this
+# image with `--platform linux/amd64` (slow but functional) — full-speed
+# x64-on-arm support would need box64/FEX, which is a separate layer.
+ENV WINEPREFIX=/opt/wineprefix
+ENV WINEDEBUG=-all
+ENV WINEDLLOVERRIDES=mscoree=;mshtml=
+RUN ARCH=$(dpkg --print-architecture) \
+    && if [ "$ARCH" = "amd64" ]; then dpkg --add-architecture i386; fi \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends wine wine64 winbind \
+    && if [ "$ARCH" = "amd64" ]; then \
+         apt-get install -y --no-install-recommends wine32; \
+       fi \
+    && rm -rf /var/lib/apt/lists/* \
+    # Pre-init the Wine prefix so first run in a fresh container doesn't
+    # eat ~30s bootstrapping. WINEDLLOVERRIDES disables the gecko/mono
+    # installer prompts, so no display is needed.
+    && wineboot --init 2>&1 | tail -5 || true \
+    && wineserver -w || true
+
 # ── Tools reference ──────────────────────────────────────────────────────────
 COPY sandbox/sandbox-tools.txt /tools.txt
 
