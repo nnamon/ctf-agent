@@ -21,16 +21,27 @@ from claude_agent_sdk import (
     HookMatcher,
     ResultMessage,
     TextBlock,
+    create_sdk_mcp_server,
+    tool,
 )
 
 from backend.cost_tracker import CostTracker
 from backend.backends import Backend
+from backend.exec_env import EnvRegistry
 from backend.loop_detect import LoopDetector
 from backend.models import model_id_from_spec
 from backend.output_types import solver_output_json_schema
 from backend.prompts import ChallengeMeta, build_prompt, list_distfiles
 from backend.sandbox import DockerSandbox
 from backend.solver_base import CANCELLED, ERROR, FLAG_FOUND, GAVE_UP, QUOTA_ERROR, SolverResult
+from backend.tools.core import (
+    do_bash_target,
+    do_list_envs,
+    do_list_files_target,
+    do_read_file_target,
+    do_transfer,
+    do_write_file_target,
+)
 from backend.tracing import SolverTracer
 
 logger = logging.getLogger(__name__)
@@ -52,6 +63,7 @@ class ClaudeSolver:
         submit_fn=None,
         message_bus=None,
         notify_coordinator=None,
+        env_registry: EnvRegistry | None = None,
     ) -> None:
         self.model_spec = model_spec
         self.model_id = model_id_from_spec(model_spec)
@@ -71,12 +83,22 @@ class ClaudeSolver:
             settings=settings,
             model_spec=model_spec,
         )
+        # Multi-env: fork the coordinator-level registry per-solver so we
+        # have our own `local` without racing siblings, while sharing
+        # remote envs (pwn.college SSH master) by reference.
+        self.env_registry: EnvRegistry | None = None
+        if env_registry is not None:
+            child = env_registry.fork()
+            child.register(self.sandbox)
+            child._started.add(self.sandbox.name)
+            self.env_registry = child
         self.loop_detector = LoopDetector()
         self.tracer = SolverTracer(meta.name, self.model_id)
         self.agent_name = f"{meta.name}/{self.model_id}"
 
         self._client: ClaudeSDKClient | None = None
         self._session_id: str | None = None
+        self._mcp_server: object | None = None
         self._container_id: str = ""
         self._step_count = 0
         self._flag: str | None = None
@@ -84,6 +106,98 @@ class ClaudeSolver:
         self._findings = ""
         self._cost_usd = 0.0
         self._bump_insights: str | None = None
+
+    def _build_remote_mcp(self):
+        """Construct the in-process MCP server exposing remote-target tools.
+
+        Native `Bash` (with the docker-exec hook) keeps owning the local
+        path. These tools cover everything else: bash / read / write /
+        list_files on remote envs, plus list_envs and transfer. Each is
+        a thin wrapper over the env-aware helpers in tools.core.
+        """
+        # NB: the @tool decorator generates JSON schemas from the Python
+        # types in the second arg. Keep it simple — strings only — so the
+        # tool surface is identical across providers.
+        registry = self.env_registry
+        assert registry is not None  # only called from multi-env path
+
+        def _text(s: str) -> dict:
+            return {"content": [{"type": "text", "text": s}]}
+
+        @tool(
+            "bash_remote",
+            "Execute a bash command in a non-local exec env (use native Bash for local).",
+            {"target": str, "command": str, "timeout_seconds": int},
+        )
+        async def bash_remote(args: dict) -> dict:
+            return _text(await do_bash_target(
+                registry,
+                args.get("target", ""),
+                args.get("command", ""),
+                int(args.get("timeout_seconds") or 60),
+            ))
+
+        @tool(
+            "read_remote",
+            "Read a file from a non-local exec env.",
+            {"target": str, "path": str},
+        )
+        async def read_remote(args: dict) -> dict:
+            return _text(await do_read_file_target(
+                registry, args.get("target", ""), args.get("path", "")
+            ))
+
+        @tool(
+            "write_remote",
+            "Write a file into a non-local exec env.",
+            {"target": str, "path": str, "content": str},
+        )
+        async def write_remote(args: dict) -> dict:
+            return _text(await do_write_file_target(
+                registry,
+                args.get("target", ""),
+                args.get("path", ""),
+                args.get("content", ""),
+            ))
+
+        @tool(
+            "list_remote_files",
+            "List files in a directory inside a non-local exec env.",
+            {"target": str, "path": str},
+        )
+        async def list_remote_files(args: dict) -> dict:
+            return _text(await do_list_files_target(
+                registry, args.get("target", ""), args.get("path", "")
+            ))
+
+        @tool(
+            "list_envs",
+            "List exec environments available for tool calls.",
+            {},
+        )
+        async def list_envs_tool(args: dict) -> dict:
+            return _text(await do_list_envs(registry))
+
+        @tool(
+            "transfer",
+            "Copy a file between exec environments via the orchestrator.",
+            {"src_target": str, "src_path": str, "dst_target": str, "dst_path": str},
+        )
+        async def transfer_tool(args: dict) -> dict:
+            return _text(await do_transfer(
+                registry,
+                args.get("src_target", ""),
+                args.get("src_path", ""),
+                args.get("dst_target", ""),
+                args.get("dst_path", ""),
+            ))
+
+        return create_sdk_mcp_server(
+            name="envs",
+            version="1.0.0",
+            tools=[bash_remote, read_remote, write_remote,
+                   list_remote_files, list_envs_tool, transfer_tool],
+        )
 
     async def start(self) -> None:
         await self.sandbox.start()
@@ -94,19 +208,58 @@ class ClaudeSolver:
         container_arch = arch_result.stdout.strip() or "unknown"
 
         distfile_names = list_distfiles(self.challenge_dir)
-        sandbox_preamble = (
-            "IMPORTANT: You are running inside a Docker sandbox. "
-            "All files are under /challenge/ — distfiles at /challenge/distfiles/, "
-            "workspace at /challenge/workspace/. Do NOT use any paths outside /challenge/. "
-            "All bash commands run inside the container via docker exec. "
-            "Use bash for everything: cat/head to read files, tee/echo> to write, find/grep to search. "
-            "submit_flag 'FLAG' to submit. notify_coordinator 'MSG' to message the coordinator.\n\n"
-        )
+
+        # Multi-env: surface envs in the prompt and tell the model to use
+        # native Bash for local work but the MCP `bash_remote` /
+        # `read_remote` / `write_remote` / `list_remote_files` tools for
+        # work that has to happen on a different env (e.g. pwn.college).
+        multi = bool(self.env_registry) and len(self.env_registry.names) > 1
+        primary_env = (getattr(self.meta, "primary_env", "") or "local") if multi else ""
+
+        if multi and primary_env != "local":
+            sandbox_preamble = (
+                f"IMPORTANT: You have multiple exec environments available "
+                f"(default for this challenge: `{primary_env}`).\n"
+                f"  • For LOCAL work (the Docker sandbox with the full toolchain) "
+                f"use the native `Bash` tool — commands run via `docker exec` "
+                f"in /challenge.\n"
+                f"  • For work on `{primary_env}` or any other remote env "
+                f"use `bash_remote(target, command)`, `read_remote(target, path)`, "
+                f"`write_remote(target, path, content)`, "
+                f"`list_remote_files(target, path)`. The flag for THIS challenge "
+                f"lives only inside `{primary_env}` — local sandbox is for "
+                f"scratch work and tooling.\n"
+                f"  • Use `list_envs` to see what's available and `transfer` "
+                f"to copy files between envs.\n"
+                f"  • submit_flag 'FLAG' to submit. notify_coordinator 'MSG' "
+                f"to message the coordinator.\n\n"
+            )
+        elif multi:
+            sandbox_preamble = (
+                "IMPORTANT: You have multiple exec environments available, "
+                "but this challenge defaults to `local` (the Docker sandbox).\n"
+                "  • Use native `Bash` for everything in the local sandbox.\n"
+                "  • Use `bash_remote(target, command)` etc. when you need a "
+                "different env (call `list_envs` first to see options).\n"
+                "  • submit_flag 'FLAG' to submit. notify_coordinator 'MSG' "
+                "to message the coordinator.\n\n"
+            )
+        else:
+            sandbox_preamble = (
+                "IMPORTANT: You are running inside a Docker sandbox. "
+                "All files are under /challenge/ — distfiles at /challenge/distfiles/, "
+                "workspace at /challenge/workspace/. Do NOT use any paths outside /challenge/. "
+                "All bash commands run inside the container via docker exec. "
+                "Use bash for everything: cat/head to read files, tee/echo> to write, find/grep to search. "
+                "submit_flag 'FLAG' to submit. notify_coordinator 'MSG' to message the coordinator.\n\n"
+            )
         prior = self.ctfd.previous_attempts(self.meta.name)
         ctx_files = list(getattr(self.settings, "context_files", []) or [])
         system_prompt = sandbox_preamble + build_prompt(
             self.meta, distfile_names, container_arch=container_arch,
             has_named_tools=False, prior_attempts=prior, context_files=ctx_files,
+            exec_envs=self.env_registry.describe() if multi else None,
+            primary_env=primary_env,
         )
 
         # PreToolUse hook: rewrite Bash commands to run in the sandbox container.
@@ -280,13 +433,33 @@ class ClaudeSolver:
         from backend.models import effort_from_spec
         effort = effort_from_spec(self.model_spec)
 
+        # Multi-env: build an MCP server exposing remote-target tools.
+        # Native Bash continues to handle local — that's the well-trodden
+        # path with the existing docker-exec hook, hard to improve. The
+        # remote tools are MCP because that's the SDK-native way to add
+        # named, schema'd tools to a Claude session.
+        mcp_servers: dict[str, object] = {}
+        extra_allowed: list[str] = []
+        if multi:
+            server = self._build_remote_mcp()
+            mcp_servers["envs"] = server
+            extra_allowed = [
+                "mcp__envs__bash_remote",
+                "mcp__envs__read_remote",
+                "mcp__envs__write_remote",
+                "mcp__envs__list_remote_files",
+                "mcp__envs__list_envs",
+                "mcp__envs__transfer",
+            ]
+
         options = ClaudeAgentOptions(
             model=self.model_id,
             system_prompt=system_prompt,
             effort=effort,
             # Clear CLAUDECODE to prevent nested-session rejection when run from coordinator
             env={"CLAUDECODE": ""},
-            allowed_tools=["Bash", "WebFetch", "WebSearch"],
+            mcp_servers=mcp_servers,
+            allowed_tools=["Bash", "WebFetch", "WebSearch", *extra_allowed],
             permission_mode="bypassPermissions",
             output_format={"type": "json_schema", "schema": solver_output_json_schema()},
             hooks={

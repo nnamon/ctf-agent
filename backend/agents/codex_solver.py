@@ -23,6 +23,7 @@ from typing import Any
 
 from backend.cost_tracker import CostTracker
 from backend.backends import Backend
+from backend.exec_env import EnvRegistry
 from backend.loop_detect import LoopDetector
 from backend.models import model_id_from_spec, supports_vision
 from backend.output_types import solver_output_json_schema
@@ -31,13 +32,19 @@ from backend.sandbox import DockerSandbox
 from backend.solver_base import CANCELLED, ERROR, FLAG_FOUND, GAVE_UP, QUOTA_ERROR, SolverResult
 from backend.tools.core import (
     do_bash,
+    do_bash_target,
+    do_list_envs,
     do_list_files,
+    do_list_files_target,
     do_read_file,
+    do_read_file_target,
+    do_transfer,
     do_view_image,
     do_web_fetch,
     do_webhook_create,
     do_webhook_get_requests,
     do_write_file,
+    do_write_file_target,
 )
 from backend.tracing import SolverTracer
 
@@ -55,71 +62,155 @@ def _next_id() -> int:
     return next(_rpc_counter)
 
 
-# DynamicToolSpec[] for thread/start
-SANDBOX_TOOLS = [
-    {
-        "name": "bash",
-        "description": "Execute a bash command in the Docker sandbox.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "command": {"type": "string"},
-                "timeout_seconds": {"type": "integer", "default": 60},
+def _build_sandbox_tools(
+    *,
+    multi: bool,
+    env_names: list[str] | None = None,
+    primary_env: str = "",
+) -> list[dict[str, Any]]:
+    """Construct Codex's DynamicToolSpec[] for thread/start.
+
+    `multi` toggles multi-env tool surface. When True:
+      - bash / read_file / write_file / list_files gain an optional `target`
+        property naming which env to run in. Default is `primary_env`.
+      - Two new tools (list_envs, transfer) are appended.
+
+    Single-env mode preserves the historical schema verbatim so existing
+    Codex prompts/tool-call patterns keep working unchanged.
+    """
+    target_desc = (
+        f"Optional. Exec env to run in (one of: {', '.join(env_names or [])}). "
+        f"Defaults to {primary_env or 'local'}. "
+        f"Tool results are prefixed with [<env>] so you can always see where "
+        f"a command actually ran."
+    )
+
+    def maybe_target(props: dict[str, Any]) -> dict[str, Any]:
+        if multi:
+            props["target"] = {"type": "string", "description": target_desc}
+        return props
+
+    tools: list[dict[str, Any]] = [
+        {
+            "name": "bash",
+            "description": (
+                "Execute a bash command in an exec environment. By default "
+                "runs in the local Docker sandbox; pass `target` to run "
+                "elsewhere (e.g. on a remote pwn.college workspace)."
+                if multi else "Execute a bash command in the Docker sandbox."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": maybe_target({
+                    "command": {"type": "string"},
+                    "timeout_seconds": {"type": "integer", "default": 60},
+                }),
+                "required": ["command"],
             },
-            "required": ["command"],
         },
-    },
-    {
-        "name": "read_file",
-        "description": "Read a file from the sandbox container.",
-        "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
-    },
-    {
-        "name": "write_file",
-        "description": "Write a file into the sandbox container.",
-        "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]},
-    },
-    {
-        "name": "list_files",
-        "description": "List files in a directory in the sandbox.",
-        "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "default": "/challenge/distfiles"}}},
-    },
-    {
-        "name": "submit_flag",
-        "description": "Submit a flag to CTFd. Returns CORRECT, ALREADY SOLVED, or INCORRECT.",
-        "inputSchema": {"type": "object", "properties": {"flag": {"type": "string"}}, "required": ["flag"]},
-    },
-    {
-        "name": "web_fetch",
-        "description": "Fetch a URL from the host network.",
-        "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "method": {"type": "string", "default": "GET"}, "body": {"type": "string", "default": ""}}, "required": ["url"]},
-    },
-    {
-        "name": "webhook_create",
-        "description": "Create a webhook.site token for out-of-band HTTP callbacks (XSS, SSRF, bot challenges).",
-        "inputSchema": {"type": "object", "properties": {}},
-    },
-    {
-        "name": "webhook_get_requests",
-        "description": "Retrieve HTTP requests received by a webhook.site token.",
-        "inputSchema": {"type": "object", "properties": {"uuid": {"type": "string"}}, "required": ["uuid"]},
-    },
-    {
-        "name": "view_image",
-        "description": "View an image file from the sandbox for visual/steg analysis.",
-        "inputSchema": {"type": "object", "properties": {"filename": {"type": "string"}}, "required": ["filename"]},
-    },
-    {
-        "name": "notify_coordinator",
-        "description": "Send a strategic message to the coordinator (e.g. flag format discovery, shared vulnerability, request for help).",
-        "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]},
-    },
-    {
-        "name": "note",
-        "description": "Record a key insight, working payload, or dead end for the post-mortem writeup. Call this whenever you've identified a vulnerability (with brief proof), a working exploit payload (paste the actual code/request), a dead end (with the reason you ruled it out), or a generalizable technique. These notes are compiled into a writeup at the end of the run and do not affect grading. Be concise — one or two lines per note.",
-        "inputSchema": {"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]},
-    },
-]
+        {
+            "name": "read_file",
+            "description": "Read a file from an exec environment.",
+            "inputSchema": {
+                "type": "object",
+                "properties": maybe_target({"path": {"type": "string"}}),
+                "required": ["path"],
+            },
+        },
+        {
+            "name": "write_file",
+            "description": "Write a file into an exec environment.",
+            "inputSchema": {
+                "type": "object",
+                "properties": maybe_target({
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                }),
+                "required": ["path", "content"],
+            },
+        },
+        {
+            "name": "list_files",
+            "description": "List files in a directory inside an exec environment.",
+            "inputSchema": {
+                "type": "object",
+                "properties": maybe_target({
+                    "path": {"type": "string", "default": "/challenge/distfiles"},
+                }),
+            },
+        },
+        {
+            "name": "submit_flag",
+            "description": "Submit a flag to CTFd. Returns CORRECT, ALREADY SOLVED, or INCORRECT.",
+            "inputSchema": {"type": "object", "properties": {"flag": {"type": "string"}}, "required": ["flag"]},
+        },
+        {
+            "name": "web_fetch",
+            "description": "Fetch a URL from the host network.",
+            "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}, "method": {"type": "string", "default": "GET"}, "body": {"type": "string", "default": ""}}, "required": ["url"]},
+        },
+        {
+            "name": "webhook_create",
+            "description": "Create a webhook.site token for out-of-band HTTP callbacks (XSS, SSRF, bot challenges).",
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "webhook_get_requests",
+            "description": "Retrieve HTTP requests received by a webhook.site token.",
+            "inputSchema": {"type": "object", "properties": {"uuid": {"type": "string"}}, "required": ["uuid"]},
+        },
+        {
+            "name": "view_image",
+            "description": "View an image file from the local sandbox for visual/steg analysis.",
+            "inputSchema": {"type": "object", "properties": {"filename": {"type": "string"}}, "required": ["filename"]},
+        },
+        {
+            "name": "notify_coordinator",
+            "description": "Send a strategic message to the coordinator (e.g. flag format discovery, shared vulnerability, request for help).",
+            "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]},
+        },
+        {
+            "name": "note",
+            "description": "Record a key insight, working payload, or dead end for the post-mortem writeup. Call this whenever you've identified a vulnerability (with brief proof), a working exploit payload (paste the actual code/request), a dead end (with the reason you ruled it out), or a generalizable technique. These notes are compiled into a writeup at the end of the run and do not affect grading. Be concise — one or two lines per note.",
+            "inputSchema": {"type": "object", "properties": {"content": {"type": "string"}}, "required": ["content"]},
+        },
+    ]
+
+    if multi:
+        tools.append({
+            "name": "list_envs",
+            "description": (
+                "List the exec environments available for tool calls, with a "
+                "short description of each. Use the names returned here as the "
+                "`target` arg on bash / read_file / write_file / list_files."
+            ),
+            "inputSchema": {"type": "object", "properties": {}},
+        })
+        tools.append({
+            "name": "transfer",
+            "description": (
+                "Copy a file between two exec environments. Goes through the "
+                "orchestrator (read on src, write on dst). Use for small "
+                "artifacts; for big payloads use bash + scp from the source env."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "src_target": {"type": "string"},
+                    "src_path": {"type": "string"},
+                    "dst_target": {"type": "string"},
+                    "dst_path": {"type": "string"},
+                },
+                "required": ["src_target", "src_path", "dst_target", "dst_path"],
+            },
+        })
+
+    return tools
+
+
+# Default (single-env) tool list, kept under the historical name so any
+# external code that imports `SANDBOX_TOOLS` keeps working unchanged.
+SANDBOX_TOOLS = _build_sandbox_tools(multi=False)
 
 
 class CodexSolver:
@@ -138,6 +229,7 @@ class CodexSolver:
         submit_fn=None,
         message_bus=None,
         notify_coordinator=None,
+        env_registry: EnvRegistry | None = None,
     ) -> None:
         self.model_spec = model_spec
         self.model_id = model_id_from_spec(model_spec)
@@ -158,6 +250,18 @@ class CodexSolver:
             model_spec=model_spec,
         )
         self.use_vision = supports_vision(model_spec)
+        # Multi-env: fork the coordinator-level registry so we have our
+        # own `local` entry without racing with sibling solvers, while
+        # still sharing remote envs (pwn.college SSH master) by reference.
+        # Mark the local sandbox as already "started" in the child so the
+        # registry doesn't try to start it behind our back — `await
+        # self.sandbox.start()` in our own start() is the source of truth.
+        self.env_registry: EnvRegistry | None = None
+        if env_registry is not None:
+            child = env_registry.fork()
+            child.register(self.sandbox)
+            child._started.add(self.sandbox.name)
+            self.env_registry = child
         self.loop_detector = LoopDetector()
         self.tracer = SolverTracer(meta.name, self.model_id)
         self.agent_name = f"{meta.name}/{self.model_id}"
@@ -186,9 +290,27 @@ class CodexSolver:
         distfile_names = list_distfiles(self.challenge_dir)
         prior = self.ctfd.previous_attempts(self.meta.name)
         ctx_files = list(getattr(self.settings, "context_files", []) or [])
+
+        # Multi-env: surface the registered envs to the prompt and build a
+        # tool list that exposes `target` + list_envs + transfer.
+        multi = bool(self.env_registry) and len(self.env_registry.names) > 1
+        primary_env = (getattr(self.meta, "primary_env", "") or "local") if multi else ""
+        env_descriptions = (
+            self.env_registry.describe() if multi else None
+        )
         system_prompt = build_prompt(
             self.meta, distfile_names, container_arch=container_arch,
             has_named_tools=True, prior_attempts=prior, context_files=ctx_files,
+            exec_envs=env_descriptions, primary_env=primary_env,
+        )
+
+        sandbox_tools = (
+            _build_sandbox_tools(
+                multi=True,
+                env_names=self.env_registry.names,
+                primary_env=primary_env,
+            )
+            if multi else SANDBOX_TOOLS
         )
 
         self._proc = await asyncio.create_subprocess_exec(
@@ -208,14 +330,28 @@ class CodexSolver:
         await self._send_notification("initialized", {})
 
         # thread/start — personality is enum, system prompt in baseInstructions
-        # Prepend sandbox path reminder to prevent models from using host paths
-        tool_names = [t["name"] for t in SANDBOX_TOOLS]
-        sandbox_preamble = (
-            "IMPORTANT: You are running inside a Docker sandbox. "
-            "All files are under /challenge/ — distfiles at /challenge/distfiles/, "
-            "workspace at /challenge/workspace/. Do NOT use any paths outside /challenge/. "
-            f"Your tools: {', '.join(tool_names)}. Use these for ALL operations.\n\n"
-        )
+        # Prepend sandbox path reminder to prevent models from using host paths.
+        # In multi-env mode, swap the local-only reminder for one that
+        # explains the agent has multiple targets and that the default may
+        # NOT be the local sandbox (e.g. pwn.college's `pwncollege` env).
+        tool_names = [t["name"] for t in sandbox_tools]
+        if multi:
+            sandbox_preamble = (
+                f"IMPORTANT: You have multiple exec environments available "
+                f"(default: `{primary_env}`). Each tool call accepts a "
+                f"`target` arg naming the env to run in. Tool results are "
+                f"prefixed with `[<env>]` so you can see where each command "
+                f"actually ran. Call `list_envs` to see what's available "
+                f"and `transfer` to copy artifacts between envs.\n\n"
+                f"Your tools: {', '.join(tool_names)}. Use these for ALL operations.\n\n"
+            )
+        else:
+            sandbox_preamble = (
+                "IMPORTANT: You are running inside a Docker sandbox. "
+                "All files are under /challenge/ — distfiles at /challenge/distfiles/, "
+                "workspace at /challenge/workspace/. Do NOT use any paths outside /challenge/. "
+                f"Your tools: {', '.join(tool_names)}. Use these for ALL operations.\n\n"
+            )
         thread_params: dict[str, Any] = {
             "model": self.model_id,
             "personality": "pragmatic",
@@ -223,7 +359,7 @@ class CodexSolver:
             "cwd": "/challenge",
             "approvalPolicy": "on-request",
             "sandbox": "read-only",
-            "dynamicTools": SANDBOX_TOOLS,
+            "dynamicTools": sandbox_tools,
         }
         # serviceTier "flex" is an OpenAI API feature (cheaper/slower); ChatGPT
         # subscription auth rejects it. Opt-in via env so subscription is the default.
@@ -432,14 +568,48 @@ class CodexSolver:
         })
 
     async def _exec_tool(self, name: str, args: dict) -> str | tuple[bytes, str]:
+        # Multi-env routing. When the agent passed a `target`, we go
+        # through the registry; otherwise the legacy single-sandbox path
+        # runs (keeps single-env solver behavior identical to before).
+        target = (args.get("target") or "").strip()
+        use_registry = bool(self.env_registry) and bool(target)
+
         if name == "bash":
-            return await do_bash(self.sandbox, args.get("command", ""), args.get("timeout_seconds", 60))
+            cmd = args.get("command", "")
+            timeout = args.get("timeout_seconds", 60)
+            if use_registry:
+                return await do_bash_target(self.env_registry, target, cmd, timeout)
+            return await do_bash(self.sandbox, cmd, timeout)
         elif name == "read_file":
-            return str(await do_read_file(self.sandbox, args.get("path", "")))
+            path = args.get("path", "")
+            if use_registry:
+                return str(await do_read_file_target(self.env_registry, target, path))
+            return str(await do_read_file(self.sandbox, path))
         elif name == "write_file":
-            return await do_write_file(self.sandbox, args.get("path", ""), args.get("content", ""))
+            path = args.get("path", "")
+            content = args.get("content", "")
+            if use_registry:
+                return await do_write_file_target(self.env_registry, target, path, content)
+            return await do_write_file(self.sandbox, path, content)
         elif name == "list_files":
-            return await do_list_files(self.sandbox, args.get("path", "/challenge/distfiles"))
+            path = args.get("path", "/challenge/distfiles")
+            if use_registry:
+                return await do_list_files_target(self.env_registry, target, path)
+            return await do_list_files(self.sandbox, path)
+        elif name == "list_envs":
+            if not self.env_registry:
+                return "Only one exec environment available (the local Docker sandbox)."
+            return await do_list_envs(self.env_registry)
+        elif name == "transfer":
+            if not self.env_registry:
+                return "transfer is only available when multiple envs are registered."
+            return await do_transfer(
+                self.env_registry,
+                args.get("src_target", ""),
+                args.get("src_path", ""),
+                args.get("dst_target", ""),
+                args.get("dst_path", ""),
+            )
         elif name == "submit_flag":
             flag = args.get("flag", "")
             if self.no_submit:

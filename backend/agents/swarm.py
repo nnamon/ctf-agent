@@ -105,6 +105,7 @@ class ChallengeSwarm:
                 submit_fn=_submit_fn,
                 message_bus=self.message_bus,
                 notify_coordinator=_notify,
+                env_registry=self.env_registry,
             )
 
         if provider == "codex":
@@ -121,6 +122,7 @@ class ChallengeSwarm:
                 submit_fn=_submit_fn,
                 message_bus=self.message_bus,
                 notify_coordinator=_notify,
+                env_registry=self.env_registry,
             )
 
         return self._create_pydantic_solver(model_spec)
