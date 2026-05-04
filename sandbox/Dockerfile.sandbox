@@ -529,6 +529,44 @@ RUN mkdir -p /opt/wordlists \
     && set -e \
     && ls -la /opt/wordlists/
 
+# ── Cross-compilers for foreign-arch Linux + bare-metal ARM ─────────────────
+# Pairs with qemu-user-static so we can both BUILD and RUN foreign-arch
+# binaries. Use cases: custom shellcode for ARM/MIPS/RISC-V Linux targets,
+# bare-metal Cortex-M firmware (gcc-arm-none-eabi), embedded payload dev.
+#
+# Installed per-package because availability differs by host arch — e.g.
+# powerpc-cross packages aren't in jammy-arm64, but a single missing
+# package would otherwise roll back the entire transaction. With per-pkg
+# install + || true we get maximum coverage for whatever the host supports.
+RUN apt-get update; \
+    set +e; \
+    for pkg in \
+        gcc-aarch64-linux-gnu \
+        gcc-arm-linux-gnueabi gcc-arm-linux-gnueabihf \
+        gcc-mips-linux-gnu gcc-mipsel-linux-gnu \
+        gcc-mips64-linux-gnuabi64 \
+        gcc-riscv64-linux-gnu \
+        gcc-powerpc-linux-gnu gcc-powerpc64-linux-gnu \
+        gcc-arm-none-eabi; do \
+      apt-get install -y --no-install-recommends "$pkg" \
+        || echo "$pkg unavailable on this host arch (non-fatal)"; \
+    done; \
+    rm -rf /var/lib/apt/lists/*; \
+    true
+
+# ── Maven + Gradle (Java build automation for real-world Java apps) ─────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        maven gradle \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── PHP + Composer (web challenges, deserialization gadget testing) ─────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        php-cli php-curl php-mbstring php-xml php-zip php-bcmath \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -sSL https://getcomposer.org/installer | php -- \
+        --install-dir=/usr/local/bin --filename=composer \
+    && composer --version
+
 # ── Wordlist URL fix-up ─────────────────────────────────────────────────────
 # SecLists renamed `10-million-password-list-top-N.txt` to
 # `xato-net-10-million-passwords-N.txt`. Re-download with the new names

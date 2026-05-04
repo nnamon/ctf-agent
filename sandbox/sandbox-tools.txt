@@ -217,15 +217,33 @@ ilspycmd           See DECOMPILERS.
 ysoserial-net      See DESERIALIZATION GADGETS.
 
 == BUILD TOOLS / RUNTIMES ==
-gcc / g++          C/C++ compiler. gcc -o exploit exploit.c
+gcc / g++          C/C++ compiler (host arch). gcc -o exploit exploit.c
 make / cmake       Build systems.
 mingw-w64          Cross-compile Windows PEs from this Linux sandbox.
                      x86_64-w64-mingw32-gcc src.c -o out.exe
                      i686-w64-mingw32-gcc   src.c -o out32.exe
+Foreign-arch Linux cross-compilers (pair with qemu-user-static to run):
+                     aarch64-linux-gnu-gcc       (ARM64 Linux)
+                     arm-linux-gnueabi-gcc       (ARM 32-bit, soft float)
+                     arm-linux-gnueabihf-gcc     (ARM 32-bit, hard float)
+                     mips-linux-gnu-gcc          (MIPS big-endian)
+                     mipsel-linux-gnu-gcc        (MIPS little-endian)
+                     mips64-linux-gnuabi64-gcc   (MIPS64)
+                     riscv64-linux-gnu-gcc       (RISC-V 64-bit)
+                     powerpc-linux-gnu-gcc       (PowerPC)
+                   Build then run: aarch64-linux-gnu-gcc -static src.c -o bin
+                                   qemu-aarch64-static ./bin
+arm-none-eabi-gcc  Bare-metal ARM Cortex-M (firmware, bootloaders).
+                     arm-none-eabi-gcc -mcpu=cortex-m4 -nostartfiles src.c
 go (Go)            Go toolchain at /usr/local/go/bin. go build, go run.
                    go install <pkg>@latest puts binaries in /root/go/bin/.
 rustc / cargo      Rust toolchain (rustup, stable). cargo new, cargo build --release.
 dotnet             See .NET section.
+mvn (Maven)        Java build automation. mvn package, mvn dependency:tree.
+gradle             Java/Kotlin build automation. gradle build, gradle wrapper.
+php / php-cli      PHP 8 CLI. php -r 'echo phpversion();', php script.php.
+                   Useful for deserialization gadget testing + web challenges.
+composer           PHP dependency manager. composer install, composer require <pkg>.
 jq                 JSON processor. cat file.json | jq '.key'
 nodejs / npm       JavaScript runtime + package manager. node script.js
 sqlite3            SQLite CLI. sqlite3 file.db '.dump'
