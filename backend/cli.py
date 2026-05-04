@@ -185,20 +185,19 @@ def main(
     if challenges_dir == "challenges":
         challenges_dir = str(session.challenges_dir)
 
-    # `--models` is multiple=True (so you can pass it twice) but also
-    # tolerate the more-natural comma-separated form a user might
-    # reach for first: `--models codex/gpt-5.5,codex/gpt-5.4-mini`.
-    # Without this split, the comma form silently becomes one
-    # malformed spec and every solver dies with a model-not-found
-    # error from the provider.
-    model_specs: list[str] = []
+    # `--models` is multiple=True; pass it once per model spec, e.g.
+    # `--models codex/gpt-5.5 --models codex/gpt-5.4-mini`. Comma-
+    # separated single value is rejected so a typo doesn't silently
+    # become one malformed spec that the provider then rejects with
+    # an unhelpful "model not supported" error.
     for m in models:
-        for part in str(m).split(","):
-            part = part.strip()
-            if part:
-                model_specs.append(part)
-    if not model_specs:
-        model_specs = list(DEFAULT_MODELS)
+        if "," in m:
+            console.print(
+                f"[red]Invalid --models value {m!r}: pass --models once per "
+                "spec instead of comma-separating.[/red]"
+            )
+            sys.exit(2)
+    model_specs = list(models) if models else list(DEFAULT_MODELS)
 
     from backend.sandbox import RUN_ID
     console.print("[bold]CTF Agent v2[/bold]")
