@@ -32,6 +32,7 @@ Challenge naming:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
@@ -69,6 +70,15 @@ class PwnCollegeBackend(CTFdSessionBackend):
     _module_slug_ints: dict[tuple[str, str], dict[str, int]] = field(
         default_factory=dict, repr=False
     )
+
+    # Minimum gap between consecutive POSTs to /pwncollege_api/v1/docker.
+    # pwn.college applies a per-account rate limit (crossing it ~120 times
+    # in rapid succession on the agent account silently bricked spawns —
+    # all subsequent /docker requests returned "Docker failed" or 504 for
+    # hours). Spacing requests out keeps us under the limit. The default
+    # 30s is a guess that should be safe; tune via session env if needed.
+    spawn_min_gap_s: float = 30.0
+    _last_spawn_ts: float = field(default=0.0, repr=False)
 
     # ---------- CSRF override ----------
 
@@ -445,7 +455,25 @@ class PwnCollegeBackend(CTFdSessionBackend):
         pwn.college's docker_locked semantics mean this implicitly tears
         down any previously running workspace. The server returns 200 with
         a streaming JSON body on success; we drain it and check the final
-        status."""
+        status.
+
+        Throttled to one POST per `spawn_min_gap_s` seconds — the platform
+        has a per-account rate limit that, once tripped, returns
+        "Docker failed" / 504 for hours.
+        """
+        # Per-account spawn rate-limit gate. Sleep just enough to honor
+        # `spawn_min_gap_s` since the previous POST.
+        import time as _time
+        elapsed = _time.monotonic() - self._last_spawn_ts
+        if elapsed < self.spawn_min_gap_s:
+            wait_s = self.spawn_min_gap_s - elapsed
+            logger.info(
+                "spawn rate-limit: sleeping %.1fs before posting workspace",
+                wait_s,
+            )
+            await asyncio.sleep(wait_s)
+        self._last_spawn_ts = _time.monotonic()
+
         await self._ensure_logged_in()
         client = await self._ensure_client()
         headers = self._base_headers()
