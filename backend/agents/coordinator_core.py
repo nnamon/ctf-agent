@@ -277,6 +277,7 @@ async def _generate_writeup_for_swarm(swarm, winner_result, deps: CoordinatorDep
             duration_s=duration_s,
             out_dir=session_for_writeup.writeups_dir,
             model=deps.writeup_model,
+            settings=deps.settings,
         )
         if out:
             logger.info("Post-mortem writeup written: %s", out)

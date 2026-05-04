@@ -297,7 +297,7 @@ async def _run_single(
 
         if not no_writeup and result and result.status == FLAG_FOUND:
             await _generate_writeup(
-                swarm, result, cost_tracker, duration_s, writeup_model, ctfd
+                swarm, result, cost_tracker, duration_s, writeup_model, ctfd, settings,
             )
         # Persist the preserved-workspace path so an orchestrator can find
         # the artifacts via the AttemptLog SQL query.
@@ -339,7 +339,7 @@ def _record_workspace_path(ctfd, swarm, winner_result, settings) -> None:
         pass
 
 
-async def _generate_writeup(swarm, winner_result, cost_tracker, duration_s, model: str, ctfd=None) -> None:
+async def _generate_writeup(swarm, winner_result, cost_tracker, duration_s, model: str, ctfd=None, settings=None) -> None:
     """Generate a post-mortem writeup for a finished swarm."""
     from pathlib import Path
 
@@ -372,6 +372,7 @@ async def _generate_writeup(swarm, winner_result, cost_tracker, duration_s, mode
         duration_s=duration_s,
         out_dir=out_dir,
         model=model,
+        settings=settings,
     )
     if out:
         console.print(f"[green]Writeup:[/green] {out}")

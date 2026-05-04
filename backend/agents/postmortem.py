@@ -5,7 +5,11 @@ takes the per-solver JSONL traces, the challenge metadata, and the winner
 result, and asks an LLM to produce a writeup in the voice of an expert
 CTF team. Markdown lands in writeups/<slug>-<ts>.md.
 
-Uses ClaudeSDKClient so subscription auth keeps working with no API keys.
+Provider-agnostic: routes through `backend.text_completion`, which
+dispatches `claude-*` to the Claude Agent SDK (subscription auth),
+`codex/*` to the codex app-server (subscription auth), and the
+Pydantic-AI providers (bedrock/azure/zen/google) through their API
+clients. No more "writeup model has to be Claude" lock-in.
 """
 
 from __future__ import annotations
@@ -17,16 +21,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ClaudeSDKClient,
-    ResultMessage,
-    TextBlock,
-)
-
 from backend.prompts import ChallengeMeta
 from backend.solver_base import FLAG_FOUND, SolverResult
+from backend.text_completion import text_completion
 
 logger = logging.getLogger(__name__)
 
@@ -262,11 +259,18 @@ async def generate_writeup(
     duration_s: float,
     out_dir: Path = Path("writeups"),
     model: str = "claude-opus-4-7",
+    settings: Any | None = None,
 ) -> Path | None:
     """Generate a markdown writeup. Returns the file path on success, None on failure.
 
-    Designed to never raise — a writeup failure should not corrupt a successful
-    solve. Errors get logged.
+    `model` accepts any spec the provider-agnostic text_completion helper
+    supports — Claude (`claude-opus-4-7`, `claude-sdk/...`), Codex
+    (`codex/gpt-5.4-mini`), or Pydantic-AI providers (`bedrock/...`,
+    `azure/...`, `zen/...`, `google/...`). Pydantic-AI specs require
+    `settings` for API-key resolution; subscription paths don't.
+
+    Designed to never raise — a writeup failure should not corrupt a
+    successful solve. Errors get logged.
     """
     try:
         winner_trace = Path(winner_result.log_path) if winner_result.log_path else None
@@ -290,26 +294,13 @@ async def generate_writeup(
             duration_s=duration_s,
         )
 
-        options = ClaudeAgentOptions(
-            model=model,
-            system_prompt=SYSTEM_PROMPT,
-            env={"CLAUDECODE": ""},
-            permission_mode="bypassPermissions",
-            allowed_tools=[],  # one-shot text generation, no tools
+        markdown = await text_completion(
+            model_spec=model,
+            system=SYSTEM_PROMPT,
+            user=user_prompt,
+            settings=settings,
         )
 
-        text_parts: list[str] = []
-        async with ClaudeSDKClient(options=options) as client:
-            await client.query(user_prompt)
-            async for message in client.receive_response():
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            text_parts.append(block.text)
-                elif isinstance(message, ResultMessage):
-                    pass  # cost/usage; not tracked separately for postmortem
-
-        markdown = "\n".join(text_parts).strip()
         if not markdown:
             logger.warning("Postmortem returned empty body for %s", meta.name)
             return None
