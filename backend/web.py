@@ -118,6 +118,12 @@ body {
   line-height: 1.43;  /* MD3 body-medium */
   letter-spacing: 0.0179em;
   -webkit-font-smoothing: antialiased;
+  /* Disable iOS Safari's automatic text-size inflation. On mobile,
+     iOS heuristically picks `<pre>`/dense text blocks as "primary
+     content" and scales them to ~24px — blowing up our 11.5px
+     monospace trace renderer to feel font-massive. Lock the scale. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 .mono { font-family: "Roboto Mono", ui-monospace, monospace; }
 
@@ -383,6 +389,10 @@ pre.log {
 }
 .trace-body {
   font-family: "Roboto Mono", monospace; margin: 0;
+  /* Explicit font-size belts the iOS text-inflation suspenders set
+     on body — `<pre>` is the prime target for inflation and inheriting
+     11.5px from .trace-row isn't enough on Safari Mobile. */
+  font-size: 11.5px; line-height: 1.5;
   white-space: pre-wrap; word-break: break-word;
   color: var(--md-sys-color-on-surface);
 }
