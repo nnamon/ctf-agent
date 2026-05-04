@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from backend.agents.solver import Solver
 from backend.cost_tracker import CostTracker
 from backend.backends import Backend
+from backend.exec_env import EnvRegistry
 from backend.message_bus import ChallengeMessageBus
 from backend.models import DEFAULT_MODELS, provider_from_spec
 from backend.prompts import ChallengeMeta
@@ -58,6 +59,13 @@ class ChallengeSwarm:
     model_specs: list[str] = field(default_factory=lambda: list(DEFAULT_MODELS))
     no_submit: bool = False
     coordinator_inbox: asyncio.Queue | None = None
+
+    # Optional multi-env registry. When set, solvers spawned by this
+    # swarm receive it as `env_registry`, so their tool surface gains a
+    # `target` arg. The local Docker env auto-registers per-solver. The
+    # coordinator owns lifecycle for any shared remote envs (e.g.
+    # pwn.college's workspace SSH master) — see coordinator_loop.
+    env_registry: EnvRegistry | None = None
 
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     solvers: dict[str, SolverProtocol] = field(default_factory=dict)
@@ -138,6 +146,7 @@ class ChallengeSwarm:
             cancel_event=self.cancel_event,
             sandbox=sandbox,
             owns_sandbox=owns_sandbox,
+            env_registry=self.env_registry,
         )
         solver.deps.message_bus = self.message_bus
         solver.deps.model_spec = model_spec

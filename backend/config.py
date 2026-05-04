@@ -62,6 +62,38 @@ class Settings(BaseSettings):
     ctfd_session_cookie: str = ""
     ctfd_csrf_token: str = ""  # optional pre-extracted nonce; bound to the cookie
 
+    # ── Backend selector ──
+    # Which Backend implementation make_backend() picks. Empty string
+    # means "auto-detect" — make_backend picks CTFdBackend /
+    # CTFdSessionBackend based on whether a session cookie is set.
+    # Set to "pwncollege" to force the dojo plugin backend, scoped to
+    # the dojos in `pwncollege_dojos`. Other valid values: "ctfd",
+    # "ctfd-session", "local".
+    backend_kind: str = ""
+
+    # ── pwn.college backend params ──
+    # Comma-separated dojo IDs (e.g. "welcome,intro-to-cybersecurity") to
+    # scope discovery to. Empty list walks every visible dojo, which is
+    # rarely useful — set this explicitly per session.
+    pwncollege_dojos: list[str] = []
+    # SSH keypair used to reach hacker@dojo.pwn.college. When empty, an
+    # ed25519 keypair is auto-minted under sessions/<name>/secrets/ on
+    # first start and the public half is uploaded to /api/v1/keys.
+    pwncollege_ssh_key: str = ""
+    pwncollege_ssh_host: str = "dojo.pwn.college"
+    pwncollege_ssh_port: int = 22
+    pwncollege_ssh_user: str = "hacker"
+    # Whether to wipe /home/hacker between challenges. Default: yes —
+    # solver runs are isolated. Disable when chaining challenges that
+    # depend on prior workspace artifacts.
+    pwncollege_reset_home_on_switch: bool = True
+
+    # ── Multi-env registry ──
+    # Comma-separated env names to register beyond `local` (which is
+    # always present). Recognised values: "pwncollege". Auto-set to
+    # "pwncollege" when backend_kind is "pwncollege".
+    exec_envs: list[str] = []
+
     # Orchestration primitives — populated by --context / --preserve-workspace
     # CLI flags. An external orchestrator (e.g. another agent invoking
     # ctf-solve repeatedly) uses these to pass artifacts between chained

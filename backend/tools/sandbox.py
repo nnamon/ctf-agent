@@ -1,44 +1,124 @@
-"""Pydantic AI tool wrappers — thin delegation to backend.tools.core."""
+"""Pydantic AI tool wrappers — thin delegation to backend.tools.core.
+
+Each wrapper accepts an optional `target` argument. When a multi-env
+registry is attached to `SolverDeps.env_registry`, that target is resolved
+via the registry; otherwise calls fall back to the legacy single-sandbox
+path. This means single-env solver runs see no behavior change, and
+multi-env runs (e.g. local + pwn.college) work additively.
+"""
 
 from pydantic_ai import RunContext
 
 from backend.deps import SolverDeps
 from backend.tools.core import (
     do_bash,
+    do_bash_target,
     do_check_findings,
+    do_list_envs,
     do_list_files,
+    do_list_files_target,
     do_read_file,
+    do_read_file_target,
+    do_transfer,
     do_web_fetch,
     do_webhook_create,
     do_webhook_get_requests,
     do_write_file,
+    do_write_file_target,
 )
 
 
-async def bash(ctx: RunContext[SolverDeps], command: str, timeout_seconds: int = 60) -> str:
-    """Execute a bash command inside the sandboxed Docker container.
+def _multi(deps: SolverDeps, target: str) -> bool:
+    """True iff we should route via the env registry instead of the legacy
+    sandbox. Empty/`local` targets stay on the legacy path when the
+    registry isn't present, so single-env runs are unchanged."""
+    return bool(deps.env_registry) and bool(target)
 
-    Distfiles are at /challenge/distfiles/ (read-only).
-    Write generated/repaired files to /challenge/workspace/ (writable).
-    Challenge services are reachable via host.docker.internal.
-    Run `cat /tools.txt` to see all installed tools.
+
+async def bash(
+    ctx: RunContext[SolverDeps],
+    command: str,
+    timeout_seconds: int = 60,
+    target: str = "",
+) -> str:
+    """Execute a bash command in an exec environment.
+
+    `target` selects the env to run in (call list_envs to see the
+    options). When omitted, the command runs in the local Docker sandbox.
+
+    Default sandbox layout:
+      Distfiles at /challenge/distfiles/ (read-only).
+      Scratch at /challenge/workspace/ (writable).
+      Services reachable via host.docker.internal.
+      Run `cat /tools.txt` to see all installed tools.
     """
+    if _multi(ctx.deps, target):
+        return await do_bash_target(ctx.deps.env_registry, target, command, timeout_seconds)
     return await do_bash(ctx.deps.sandbox, command, timeout_seconds)
 
 
-async def read_file(ctx: RunContext[SolverDeps], path: str) -> str:
-    """Read a file from the container. For distfiles use paths like /challenge/distfiles/readme.txt."""
+async def read_file(ctx: RunContext[SolverDeps], path: str, target: str = "") -> str:
+    """Read a file from an exec environment. For local distfiles use paths
+    like /challenge/distfiles/readme.txt. Use `target` to read from a
+    remote env (call list_envs for options)."""
+    if _multi(ctx.deps, target):
+        return await do_read_file_target(ctx.deps.env_registry, target, path)
     return await do_read_file(ctx.deps.sandbox, path)
 
 
-async def write_file(ctx: RunContext[SolverDeps], path: str, content: str) -> str:
-    """Write a file into the container."""
+async def write_file(
+    ctx: RunContext[SolverDeps], path: str, content: str, target: str = ""
+) -> str:
+    """Write a file into an exec environment."""
+    if _multi(ctx.deps, target):
+        return await do_write_file_target(ctx.deps.env_registry, target, path, content)
     return await do_write_file(ctx.deps.sandbox, path, content)
 
 
-async def list_files(ctx: RunContext[SolverDeps], path: str = "/challenge/distfiles") -> str:
-    """List files in a directory inside the container."""
+async def list_files(
+    ctx: RunContext[SolverDeps],
+    path: str = "/challenge/distfiles",
+    target: str = "",
+) -> str:
+    """List files in a directory inside an exec environment."""
+    if _multi(ctx.deps, target):
+        return await do_list_files_target(ctx.deps.env_registry, target, path)
     return await do_list_files(ctx.deps.sandbox, path)
+
+
+async def list_envs(ctx: RunContext[SolverDeps]) -> str:
+    """List the exec environments available for tool calls.
+
+    Each env has a stable `name` (use it as the `target` arg on bash /
+    read_file / write_file / list_files) and a description that explains
+    when to pick it. When solving a pwn.college challenge, for example,
+    the real `/flag` lives only inside the `pwncollege` env — not in the
+    local sandbox."""
+    if not ctx.deps.env_registry:
+        return (
+            "Only one exec environment available (the local Docker sandbox). "
+            "All tool calls run there."
+        )
+    return await do_list_envs(ctx.deps.env_registry)
+
+
+async def transfer(
+    ctx: RunContext[SolverDeps],
+    src_target: str,
+    src_path: str,
+    dst_target: str,
+    dst_path: str,
+) -> str:
+    """Copy a file from one exec environment to another.
+
+    Goes through the orchestrator (read_file_bytes on src, write_file on
+    dst). Suitable for small artifacts; for big payloads use `bash` +
+    `scp` from the source env directly."""
+    if not ctx.deps.env_registry:
+        return "transfer is only available when multiple envs are registered."
+    return await do_transfer(
+        ctx.deps.env_registry, src_target, src_path, dst_target, dst_path
+    )
 
 
 async def check_findings(ctx: RunContext[SolverDeps]) -> str:

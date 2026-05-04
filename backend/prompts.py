@@ -22,11 +22,31 @@ class ChallengeMeta:
     connection_info: str = ""
     hints: list[dict[str, Any]] = field(default_factory=list)
     solves: int = 0
+    # Default exec env for tool calls that omit `target`. Set by backends
+    # that bind a challenge to a specific remote environment — e.g. the
+    # pwn.college backend writes `pwncollege.exec_env: "pwncollege"` into
+    # metadata.yml, and the loader copies it here so the solver prompt
+    # surfaces it as the default target.
+    primary_env: str = ""
+    # Backend-specific orchestration metadata (the `pwncollege:` block,
+    # for example). Carried through verbatim so the orchestrator can read
+    # `pwncollege.dojo`/`module`/`challenge` to spawn the workspace.
+    backend_meta: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> ChallengeMeta:
         with open(path) as f:
             data = yaml.safe_load(f) or {}
+        # Pull primary_env from a known set of backend blocks so we don't
+        # hard-code "pwncollege" everywhere. Each backend block lives at a
+        # top-level key matching its name and may set `exec_env`.
+        primary_env = ""
+        backend_meta: dict[str, Any] = {}
+        for backend_key in ("pwncollege",):
+            block = data.get(backend_key)
+            if isinstance(block, dict):
+                backend_meta[backend_key] = block
+                primary_env = primary_env or str(block.get("exec_env", "") or "")
         return cls(
             name=data.get("name", "Unknown"),
             category=data.get("category", ""),
@@ -36,6 +56,8 @@ class ChallengeMeta:
             connection_info=data.get("connection_info", ""),
             hints=data.get("hints", []),
             solves=data.get("solves", 0),
+            primary_env=primary_env,
+            backend_meta=backend_meta,
         )
 
 
@@ -62,6 +84,8 @@ def build_prompt(
     has_named_tools: bool = True,
     prior_attempts: list | None = None,
     context_files: list[str] | None = None,
+    exec_envs: list[dict[str, str]] | None = None,
+    primary_env: str = "",
 ) -> str:
     """Build the system prompt.
 
@@ -178,6 +202,34 @@ def build_prompt(
             lines.append(body.rstrip())
             lines.append("```")
             lines.append("")
+
+    # Multi-env section. When the orchestrator has registered more than
+    # one exec environment (local Docker + remote SSH + …), we MUST tell
+    # the model up front so it doesn't blindly cat local paths expecting
+    # the remote `/flag`. The `target` arg on bash/read_file/write_file
+    # selects the env per call.
+    if exec_envs and len(exec_envs) > 1:
+        lines += [
+            "## Exec environments",
+            "",
+            "You have multiple execution environments available. Each tool call "
+            "(bash / read_file / write_file / list_files) accepts a `target` "
+            "argument naming the env to run in. Tool results are prefixed with "
+            "`[<env>]` so you can always see where a command actually ran.",
+            "",
+        ]
+        for e in exec_envs:
+            mark = "  (default)" if e["name"] == primary_env else ""
+            lines.append(f"- **`{e['name']}`**{mark} — {e['description']}")
+            if e.get("scratch_dir"):
+                lines.append(f"  scratch dir: `{e['scratch_dir']}`")
+        lines += [
+            "",
+            f"Default `target` if you omit it: `{primary_env or 'local'}`. "
+            "Use `transfer(src_target, src_path, dst_target, dst_path)` to copy "
+            "small artifacts between envs (large payloads: use `bash` + `scp`).",
+            "",
+        ]
 
     visible_hints = [h for h in meta.hints if h.get("content")]
     if visible_hints:

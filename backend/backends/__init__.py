@@ -18,6 +18,7 @@ from backend.backends.base import Attempt, Backend, SubmitResult
 from backend.backends.ctfd import CTFdBackend, CTFdSessionBackend
 from backend.backends.local import LocalBackend
 from backend.backends.manual_confirm import ManualConfirmBackend
+from backend.backends.pwncollege import PwnCollegeBackend
 
 
 def make_backend(
@@ -31,6 +32,7 @@ def make_backend(
     csrf_token: str = "",
     attempt_log_path: str | Path | None = None,
     manual_confirm: bool = False,
+    pwncollege_dojos: list[str] | None = None,
 ) -> Backend:
     """Construct a backend by kind, optionally wrapped with decorators.
 
@@ -77,6 +79,14 @@ def make_backend(
         # POST doesn't need to scrape /challenges. Bound to the same session.
         if csrf_token:
             inner._csrf_token = csrf_token
+    elif kind in ("pwncollege", "pwn.college", "dojo"):
+        inner = PwnCollegeBackend(
+            base_url=base_url or "https://pwn.college",
+            session_cookie=session_cookie,
+            dojos=list(pwncollege_dojos or []),
+        )
+        if csrf_token:
+            inner._csrf_token = csrf_token
     elif kind == "local":
         inner = LocalBackend()
     else:
@@ -92,6 +102,7 @@ def make_backend(
 __all__ = [
     "Attempt", "Backend", "SubmitResult",
     "CTFdBackend", "CTFdSessionBackend", "LocalBackend",
+    "PwnCollegeBackend",
     "AttemptLogBackend", "ManualConfirmBackend",
     "make_backend",
 ]

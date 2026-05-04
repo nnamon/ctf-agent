@@ -12,6 +12,7 @@ from backend.cost_tracker import CostTracker
 from backend.sandbox import DockerSandbox
 
 if TYPE_CHECKING:
+    from backend.exec_env import EnvRegistry
     from backend.message_bus import ChallengeMessageBus
 
 # Type for the deduped submit callback: (flag) -> (display, is_confirmed)
@@ -35,6 +36,13 @@ class SolverDeps:
     notify_coordinator: Callable[[str], Coroutine[Any, Any, None]] | None = None
     # Writes a free-form note into the solver's trace for post-mortem use.
     note_fn: Callable[[str], None] | None = None
+    # Multi-target exec environment registry. When set, the solver tool
+    # surface accepts a `target` arg on bash/read_file/write_file and looks
+    # up the env via the registry. When None, all tool calls go to the
+    # legacy single-sandbox path. The local Docker env is still registered
+    # under `name="local"` and remains the default target — code that only
+    # knows about the legacy `sandbox` field continues to work unchanged.
+    env_registry: "EnvRegistry | None" = None
 
 
 @dataclass
@@ -75,3 +83,9 @@ class CoordinatorDeps:
     # category / point value / solve count.
     poller: Any = None
     challenge_metas: dict[str, Any] = field(default_factory=dict)
+    # Multi-env registry shared across all swarms in this coordinator.
+    # Populated by run_event_loop when EXEC_ENVS is non-empty / when a
+    # platform backend (e.g. pwn.college) implies a remote env. Each
+    # ChallengeSwarm receives this same registry so solvers see a stable
+    # set of envs across challenges.
+    env_registry: "EnvRegistry | None" = None

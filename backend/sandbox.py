@@ -1,4 +1,12 @@
-"""Docker sandbox for CTF challenge solving — native async via aiodocker."""
+"""Docker sandbox for CTF challenge solving — native async via aiodocker.
+
+This module hosts the canonical `LocalDockerEnv` (aliased as `DockerSandbox`
+for legacy callers): one isolated Docker container per solver, mounted with
+the challenge's distfiles read-only and a tempdir scratch read-write. It
+formally implements the `ExecEnv` ABC from `backend.exec_env`, so any code
+that needs to swap in an SSH-backed or Windows-backed env later can do so
+without changing the solver tool surface.
+"""
 
 from __future__ import annotations
 
@@ -13,9 +21,11 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import aiodocker
+
+from backend.exec_env import ExecEnv, ExecResult  # re-exported for back-compat
 
 logger = logging.getLogger(__name__)
 
@@ -156,15 +166,22 @@ async def cleanup_all_containers() -> int:
 
 
 @dataclass
-class ExecResult:
-    exit_code: int
-    stdout: str
-    stderr: str
+class DockerSandbox(ExecEnv):
+    """Isolated Docker container for a single solver agent.
 
+    Implements `ExecEnv`. Registered under name "local" by default; multiple
+    instances coexist (one per solver) so the registry-level name is shared
+    but each solver's deps holds its own DockerSandbox instance.
+    """
 
-@dataclass
-class DockerSandbox:
-    """Isolated Docker container for a single solver agent."""
+    # ExecEnv class-level metadata. Surfaced to the agent via `list_envs`.
+    name: ClassVar[str] = "local"
+    description: ClassVar[str] = (
+        "Local Linux Docker sandbox with the full RE/pwn/forensics/web "
+        "toolchain (gdb, ghidra, pwntools, ffuf, …). Default for any work "
+        "that doesn't require a specific remote target."
+    )
+    scratch_dir: ClassVar[str] = "/challenge/workspace"
 
     image: str
     challenge_dir: str

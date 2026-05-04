@@ -25,6 +25,7 @@ from backend.models import (
     resolve_model_settings,
     supports_vision,
 )
+from backend.exec_env import EnvRegistry
 from backend.output_types import FlagFound, GaveUp, SolverOutput
 from backend.prompts import ChallengeMeta, build_prompt, list_distfiles
 from backend.sandbox import DockerSandbox
@@ -33,10 +34,12 @@ from backend.tools.flag import submit_flag
 from backend.tools.sandbox import (
     bash,
     check_findings,
+    list_envs,
     list_files,
     note,
     notify_coordinator,
     read_file,
+    transfer,
     web_fetch,
     webhook_create,
     webhook_get_requests,
@@ -101,6 +104,10 @@ def _build_toolset(deps: SolverDeps) -> FunctionToolset[SolverDeps]:
              webhook_create, webhook_get_requests, check_findings, notify_coordinator, note]
     if deps.use_vision:
         tools.append(view_image)
+    # Multi-env tools are only useful when more than one env is registered;
+    # registering them in single-env mode would just confuse the model.
+    if deps.env_registry and len(deps.env_registry.names) > 1:
+        tools.extend([list_envs, transfer])
     return FunctionToolset(tools=tools, max_retries=4)
 
 
@@ -118,6 +125,7 @@ class Solver:
         cancel_event: asyncio.Event | None = None,
         sandbox: DockerSandbox | None = None,
         owns_sandbox: bool | None = None,
+        env_registry: "EnvRegistry | None" = None,
     ) -> None:
         self.model_spec = model_spec
         self.model_id = model_id_from_spec(model_spec)
@@ -135,6 +143,20 @@ class Solver:
             model_spec=model_spec,
         )
         self.use_vision = supports_vision(model_spec)
+        # If a multi-env registry was supplied, fork it so this solver
+        # has its OWN `local` entry without racing with sibling solvers
+        # in the same swarm. The fork shares remote envs (pwn.college,
+        # etc.) by reference — those are coordinator-owned and meant to
+        # be shared. Mark sandbox as already started in the child so the
+        # registry won't try to start() it again behind our back; the
+        # solver's own start() handles that.
+        self._owned_registry: "EnvRegistry | None" = None
+        if env_registry is not None:
+            child = env_registry.fork()
+            child.register(self.sandbox)
+            child._started.add(self.sandbox.name)
+            self._owned_registry = child
+            env_registry = child
         self.deps = SolverDeps(
             sandbox=self.sandbox,
             ctfd=ctfd,
@@ -143,6 +165,7 @@ class Solver:
             workspace_dir="",
             use_vision=self.use_vision,
             cost_tracker=cost_tracker,
+            env_registry=env_registry,
         )
         self.loop_detector = LoopDetector()
         self.tracer = SolverTracer(meta.name, self.model_id)
@@ -170,12 +193,27 @@ class Solver:
         distfile_names = list_distfiles(self.challenge_dir)
         prior = self.ctfd.previous_attempts(self.meta.name)
         ctx_files = list(getattr(self.settings, "context_files", []) or [])
+        # Surface multi-env info to the model when more than just `local`
+        # is registered. The primary env (default `target` for omitted
+        # calls) is taken from the challenge metadata when present —
+        # pwn.college challenges set `pwncollege.exec_env = "pwncollege"`
+        # so the agent treats remote-by-default as the path of least
+        # resistance and only reaches into local for scratch work.
+        exec_envs = (
+            self.deps.env_registry.describe()
+            if self.deps.env_registry
+            and len(self.deps.env_registry.names) > 1
+            else None
+        )
+        primary_env = getattr(self.meta, "primary_env", "") or "local"
         system_prompt = build_prompt(
             self.meta,
             distfile_names,
             container_arch=container_arch,
             prior_attempts=prior,
             context_files=ctx_files,
+            exec_envs=exec_envs,
+            primary_env=primary_env,
         )
 
         model = resolve_model(self.model_spec, self.settings)

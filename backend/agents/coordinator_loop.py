@@ -35,6 +35,7 @@ def build_deps(
 ) -> tuple[Backend, CostTracker, CoordinatorDeps]:
     """Create the backend, cost tracker, and coordinator deps."""
     ctfd = make_backend(
+        kind=getattr(settings, "backend_kind", None) or None,
         base_url=settings.ctfd_url,
         token=settings.ctfd_token,
         username=settings.ctfd_user,
@@ -43,10 +44,27 @@ def build_deps(
         csrf_token=getattr(settings, "ctfd_csrf_token", ""),
         attempt_log_path=getattr(settings, "attempt_log_path", None),
         manual_confirm=getattr(settings, "manual_confirm", False),
+        pwncollege_dojos=getattr(settings, "pwncollege_dojos", []) or [],
     )
     cost_tracker = CostTracker()
     specs = model_specs or list(DEFAULT_MODELS)
     Path(challenges_root).mkdir(parents=True, exist_ok=True)
+
+    # Build the multi-env registry. Solvers consume this via
+    # SolverDeps.env_registry. The local Docker env is registered per-
+    # solver (so each solver gets its own container); only shared remote
+    # envs (pwn.college SSH) live in the coordinator-level registry.
+    from backend.exec_envs.builder import build_env_registry
+    from backend.session import SessionContext
+    sess = SessionContext.resolve(
+        explicit=getattr(settings, "session_name", None) or None
+    )
+    env_registry = build_env_registry(
+        settings=settings,
+        session=sess,
+        backend=ctfd,
+        sandbox=None,  # solver-owned; no shared local sandbox here
+    )
 
     deps = CoordinatorDeps(
         ctfd=ctfd,
@@ -60,6 +78,7 @@ def build_deps(
         challenge_metas=challenge_metas or {},
         no_writeup=no_writeup,
         writeup_model=writeup_model,
+        env_registry=env_registry if env_registry.names else None,
     )
 
     # Pre-load already-pulled challenges

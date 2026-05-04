@@ -1,4 +1,15 @@
-"""SDK-agnostic tool logic — pure async functions, no Pydantic AI types."""
+"""SDK-agnostic tool logic — pure async functions, no Pydantic AI types.
+
+Tool functions accept either:
+  - a single `sandbox: ExecEnv` (legacy single-env mode), OR
+  - a multi-env `(registry: EnvRegistry, target: str)` pair.
+
+Both paths share the same per-env primitives (`exec`, `read_file`,
+`write_file`); the difference is only in resolution. New code should use
+the registry-aware helpers (`do_bash_target`, `do_read_file_target`, …)
+and pass the agent's chosen `target`. The legacy `do_bash(sandbox, …)`
+form is preserved so existing solver code keeps working — internally it
+just runs against whatever `ExecEnv` is passed."""
 
 from __future__ import annotations
 
@@ -11,6 +22,7 @@ import httpx
 
 if TYPE_CHECKING:
     from backend.backends import Backend
+    from backend.exec_env import EnvRegistry, ExecEnv
 
 MAX_OUTPUT = 24_000
 
@@ -196,6 +208,125 @@ def _has_valid_magic(data: bytes, mime_type: str) -> bool:
     if not magic:
         return True
     return all(i < len(data) and data[i] == b for i, b in enumerate(magic))
+
+
+# ----------------------------------------------------------------------
+# Multi-env helpers: resolve a `target` name → ExecEnv via the registry,
+# then run against it. Output is prefixed with [<target>] so the agent
+# can see where each tool result came from — addressing the "models lose
+# track of which env this command ran in" failure mode.
+# ----------------------------------------------------------------------
+
+
+def _multi_prefix(env_name: str) -> str:
+    """Header line prefixed to multi-env tool output."""
+    return f"[{env_name}]\n"
+
+
+async def _resolve_env(registry: "EnvRegistry", target: str) -> "ExecEnv":
+    if not registry.has(target):
+        raise KeyError(
+            f"Unknown env {target!r}. Available: {registry.names}. "
+            f"Call list_envs() to see what's connected."
+        )
+    return await registry.get(target)
+
+
+async def do_bash_target(
+    registry: "EnvRegistry",
+    target: str,
+    command: str,
+    timeout_seconds: int = 60,
+) -> str:
+    try:
+        env = await _resolve_env(registry, target)
+    except KeyError as e:
+        return str(e)
+    out = await do_bash(env, command, timeout_seconds)
+    return _multi_prefix(env.name) + out
+
+
+async def do_read_file_target(
+    registry: "EnvRegistry", target: str, path: str
+) -> str:
+    try:
+        env = await _resolve_env(registry, target)
+    except KeyError as e:
+        return str(e)
+    out = await do_read_file(env, path)
+    return _multi_prefix(env.name) + out
+
+
+async def do_write_file_target(
+    registry: "EnvRegistry", target: str, path: str, content: str
+) -> str:
+    try:
+        env = await _resolve_env(registry, target)
+    except KeyError as e:
+        return str(e)
+    return _multi_prefix(env.name) + await do_write_file(env, path, content)
+
+
+async def do_list_files_target(
+    registry: "EnvRegistry", target: str, path: str = ""
+) -> str:
+    try:
+        env = await _resolve_env(registry, target)
+    except KeyError as e:
+        return str(e)
+    # Default to the env's scratch dir if no path given.
+    p = path or env.scratch_dir or "/"
+    out = await do_list_files(env, p)
+    return _multi_prefix(env.name) + out
+
+
+async def do_list_envs(registry: "EnvRegistry") -> str:
+    """Return a markdown-style listing of every available exec env.
+
+    Surfaced verbatim to the agent. Includes name, description, and the
+    canonical scratch dir for each env so the agent has enough context
+    to pick the right `target` for each tool call."""
+    rows = registry.describe()
+    if not rows:
+        return "No exec environments registered."
+    lines: list[str] = ["Available exec environments:", ""]
+    for r in rows:
+        lines.append(f"- **{r['name']}** — {r['description']}")
+        if r.get("scratch_dir"):
+            lines.append(f"  scratch dir: `{r['scratch_dir']}`")
+    return "\n".join(lines)
+
+
+async def do_transfer(
+    registry: "EnvRegistry",
+    src_env: str,
+    src_path: str,
+    dst_env: str,
+    dst_path: str,
+) -> str:
+    """Copy a file from one env to another via the orchestrator.
+
+    Reads the source via `read_file_bytes` and writes the destination via
+    `write_file`. Suitable for small artifacts (≤10 MB or so); for larger
+    payloads the agent should use bash + scp directly.
+    """
+    try:
+        src = await _resolve_env(registry, src_env)
+        dst = await _resolve_env(registry, dst_env)
+    except KeyError as e:
+        return str(e)
+    try:
+        data = await src.read_file_bytes(src_path)
+    except Exception as e:
+        return f"transfer: read from {src_env}:{src_path} failed: {e}"
+    try:
+        await dst.write_file(dst_path, data)
+    except Exception as e:
+        return f"transfer: write to {dst_env}:{dst_path} failed: {e}"
+    return f"Transferred {len(data)} bytes [{src_env}]:{src_path} → [{dst_env}]:{dst_path}"
+
+
+# ----------------------------------------------------------------------
 
 
 async def do_view_image(sandbox, filename: str, use_vision: bool) -> tuple[bytes, str] | str:

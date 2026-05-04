@@ -9,10 +9,34 @@ import time
 from pathlib import Path
 
 from backend.deps import CoordinatorDeps
+from backend.exec_env import EnvRegistry
 from backend.prompts import ChallengeMeta
 from backend.solver_base import FLAG_FOUND
 
 logger = logging.getLogger(__name__)
+
+
+def _bind_challenge_to_envs(registry: EnvRegistry, meta: ChallengeMeta) -> None:
+    """Tell envs which challenge they're now driving.
+
+    For pwn.college: read meta.backend_meta["pwncollege"] = {dojo,module,
+    challenge} and call set_active_challenge on the env. This is a no-op
+    when the env doesn't know about the backend block. Safe to call before
+    the env has been started — the actual workspace spawn defers to the
+    env's pre-exec hook on first tool call.
+    """
+    pwn = meta.backend_meta.get("pwncollege")
+    if pwn and registry.has("pwncollege"):
+        try:
+            env = registry.get_unstarted("pwncollege")
+            if hasattr(env, "set_active_challenge"):
+                env.set_active_challenge(  # type: ignore[attr-defined]
+                    pwn.get("dojo", ""),
+                    pwn.get("module", ""),
+                    pwn.get("challenge", ""),
+                )
+        except Exception as e:
+            logger.warning("Could not bind pwncollege env to %s: %s", meta.name, e)
 
 
 async def do_fetch_challenges(deps: CoordinatorDeps) -> str:
@@ -95,15 +119,26 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
 
     from backend.agents.swarm import ChallengeSwarm
 
+    # Bind any per-challenge env settings to the shared registry. For
+    # pwn.college this means telling the workspace env which (dojo,
+    # module, challenge) to spawn on first SSH access. The registry +
+    # envs themselves are owned by the coordinator and persist across
+    # challenges; we just nudge the active challenge here so the next
+    # tool call from the solver lands in the right container.
+    meta = deps.challenge_metas[challenge_name]
+    if deps.env_registry is not None:
+        _bind_challenge_to_envs(deps.env_registry, meta)
+
     swarm = ChallengeSwarm(
         challenge_dir=deps.challenge_dirs[challenge_name],
-        meta=deps.challenge_metas[challenge_name],
+        meta=meta,
         ctfd=deps.ctfd,
         cost_tracker=deps.cost_tracker,
         settings=deps.settings,
         model_specs=deps.model_specs,
         no_submit=deps.no_submit,
         coordinator_inbox=deps.coordinator_inbox,
+        env_registry=deps.env_registry,
     )
     deps.swarms[challenge_name] = swarm
 
