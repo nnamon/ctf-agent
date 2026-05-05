@@ -179,13 +179,32 @@ async def run_event_loop(
                 events.append(evt)
             events.extend(poller.drain_events())
 
-            # Auto-kill swarms for solved challenges
+            # Auto-kill swarms for solved challenges, BUT only when the
+            # solve came from outside our own swarm. If swarm.confirmed_flag
+            # is already set, our solver was the one that scored — let
+            # swarm.run()'s natural FLAG_FOUND path return cleanly so
+            # _run_and_cleanup() can fire the post-mortem. Killing in
+            # that window races with the just-completed solver task and
+            # cancels it before swarm.run() reads its FLAG_FOUND result,
+            # which silently drops the writeup phase.
             for evt in events:
-                if evt.kind == "challenge_solved" and evt.challenge_name in deps.swarms:
-                    swarm = deps.swarms[evt.challenge_name]
-                    if not swarm.cancel_event.is_set():
-                        swarm.kill()
-                        logger.info("Auto-killed swarm for: %s", evt.challenge_name)
+                if evt.kind != "challenge_solved":
+                    continue
+                if evt.challenge_name not in deps.swarms:
+                    continue
+                swarm = deps.swarms[evt.challenge_name]
+                if swarm.cancel_event.is_set():
+                    continue
+                if swarm.confirmed_flag:
+                    # Our solver got it. Don't interrupt — the natural
+                    # completion path is already in flight.
+                    logger.debug(
+                        "Skipping auto-kill for %s: own solver confirmed flag",
+                        evt.challenge_name,
+                    )
+                    continue
+                swarm.kill()
+                logger.info("Auto-killed swarm for: %s", evt.challenge_name)
 
             parts: list[str] = []
             for evt in events:
