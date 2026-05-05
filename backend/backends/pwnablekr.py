@@ -48,6 +48,7 @@ Solved-set:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
@@ -160,16 +161,34 @@ class PwnableKrBackend(Backend):
     # ---------- listing ----------
 
     async def fetch_challenge_stubs(self) -> list[dict[str, Any]]:
-        """Walk /play.php once + lazily fetch /playproc.php?id=<n> per
-        challenge. The play page only has slug + layer-id + category; the
-        per-challenge fragment supplies points, description, and the SSH
-        command line."""
+        """Walk /play.php + hydrate any stubs without points/description.
+
+        The play page only has slug + layer-id + category; per-challenge
+        details (points, solves, description, ssh command) come from
+        /playproc.php?id=<n>. We hit those endpoints in parallel — the
+        values are immutable per-challenge so the result is cached for
+        the rest of the process; subsequent calls (e.g. 5s poller cycle)
+        only re-parse /play.php for the solved-set diff and short-circuit
+        the hydration loop entirely."""
         await self._ensure_logged_in()
         client = await self._ensure_client()
         resp = await client.get("/play.php")
         if resp.status_code != 200:
             raise RuntimeError(f"GET /play.php: HTTP {resp.status_code}")
         self._parse_play_html(resp.text)
+
+        # Hydrate any unhydrated stubs in parallel. _hydrate_stub is
+        # idempotent + cached, so the second + Nth call is a no-op for
+        # stubs already populated.
+        unhydrated = [
+            slug for slug, stub in self._stubs_by_name.items()
+            if not stub.get("description")
+        ]
+        if unhydrated:
+            await asyncio.gather(
+                *(self._hydrate_stub(slug) for slug in unhydrated),
+                return_exceptions=True,
+            )
         return list(self._stubs_by_name.values())
 
     async def fetch_all_challenges(self) -> list[dict[str, Any]]:
