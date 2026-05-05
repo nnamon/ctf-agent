@@ -244,6 +244,29 @@ async def do_kill_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
     return f"Swarm for {challenge_name} cancelled"
 
 
+async def do_kill_solver(
+    deps: CoordinatorDeps, challenge_name: str, model_spec: str,
+) -> str:
+    """Kill one specific solver in a swarm; siblings continue.
+
+    Use when one model is stuck (idle_seconds >120 with no progress)
+    but another is making real progress — kills only the dead weight,
+    frees the slot, lets the productive solver finish + trigger
+    writeup generation cleanly."""
+    swarm = deps.swarms.get(challenge_name)
+    if not swarm:
+        return f"No swarm running for {challenge_name}"
+    if model_spec not in swarm.model_specs:
+        return (
+            f"No solver {model_spec!r} in swarm {challenge_name}. "
+            f"Solvers: {swarm.model_specs}"
+        )
+    cancelled = swarm.kill_solver(model_spec)
+    if cancelled:
+        return f"Cancelled {model_spec} solver on {challenge_name}; siblings continue"
+    return f"{model_spec} solver on {challenge_name} was already done — nothing to cancel"
+
+
 async def do_bump_agent(deps: CoordinatorDeps, challenge_name: str, model_spec: str, insights: str) -> str:
     swarm = deps.swarms.get(challenge_name)
     if not swarm:

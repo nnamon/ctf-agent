@@ -14,6 +14,7 @@ from backend.agents.coordinator_core import (
     do_check_swarm_status,
     do_fetch_challenges,
     do_get_solve_status,
+    do_kill_solver,
     do_kill_swarm,
     do_read_solver_trace,
     do_spawn_swarm,
@@ -94,6 +95,24 @@ COORDINATOR_TOOLS = [
             "type": "object",
             "properties": {"challenge_name": {"type": "string"}},
             "required": ["challenge_name"],
+        },
+    },
+    {
+        "name": "kill_solver",
+        "description": (
+            "Cancel one specific solver in a swarm; siblings continue. "
+            "Use when check_swarm_status shows a solver with "
+            "suspected_stuck=true (idle >120s, no step progress) while "
+            "the other solver is still making progress — kills the "
+            "dead weight without scrubbing the productive one."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "challenge_name": {"type": "string"},
+                "model_spec": {"type": "string"},
+            },
+            "required": ["challenge_name", "model_spec"],
         },
     },
     {
@@ -312,6 +331,10 @@ class CodexCoordinator:
             return await do_submit_flag(deps, args["challenge_name"], args["flag"])
         elif name == "kill_swarm":
             return await do_kill_swarm(deps, args["challenge_name"])
+        elif name == "kill_solver":
+            return await do_kill_solver(
+                deps, args["challenge_name"], args["model_spec"]
+            )
         elif name == "bump_agent":
             return await do_bump_agent(deps, args["challenge_name"], args["model_spec"], args["insights"])
         elif name == "broadcast":

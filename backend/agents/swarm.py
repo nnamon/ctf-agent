@@ -408,17 +408,86 @@ class ChallengeSwarm:
                 t.cancel()
 
     def get_status(self) -> dict:
-        """Get per-agent progress and findings."""
+        """Get per-agent progress, findings, and stuck-detection data.
+
+        Adds per-solver liveness signals so the coordinator can spot
+        hung solvers (no trace activity for >120s while the swarm
+        thinks they're 'running'). The trace JSONL's mtime is a cheap
+        proxy — every tool_call / tool_result / note event triggers a
+        write, so a stale mtime means the codex transport is hung."""
+        import os
+        import time
+        now = time.time()
+
+        agents = {}
+        for spec in self.model_specs:
+            solver = self.solvers.get(spec)
+            step_count = getattr(solver, "_step_count", 0) if solver else 0
+            confirmed = getattr(solver, "_confirmed", False) if solver else False
+            cost_usd = 0.0
+            if solver and self.cost_tracker:
+                agent_name = getattr(solver, "agent_name", f"{self.meta.name}/{spec}")
+                if agent_name in self.cost_tracker.by_agent:
+                    cost_usd = self.cost_tracker.by_agent[agent_name].cost_usd
+
+            # Liveness: trace mtime tells us when the solver last
+            # emitted ANY event. >120s with no event while not
+            # cancelled = strong "stuck" signal.
+            idle_seconds = None
+            stuck = False
+            tracer = getattr(solver, "tracer", None) if solver else None
+            trace_path = getattr(tracer, "path", None) if tracer else None
+            if trace_path and os.path.exists(trace_path):
+                idle_seconds = round(now - os.path.getmtime(trace_path), 1)
+                # Threshold: 2 min of silence on a non-cancelled solver
+                # is almost always a hung codex transport.
+                stuck = (
+                    idle_seconds > 120
+                    and not self.cancel_event.is_set()
+                    and not confirmed
+                )
+
+            status = (
+                "running" if spec in self.solvers and not self.cancel_event.is_set()
+                else ("won" if self.winner and self.winner.flag else "finished")
+            )
+            agents[spec] = {
+                "findings": self.findings.get(spec, "")[:300],
+                "status": status,
+                "step_count": step_count,
+                "cost_usd": round(cost_usd, 4),
+                "confirmed": confirmed,
+                "idle_seconds": idle_seconds,
+                "suspected_stuck": stuck,
+            }
+
         return {
             "challenge": self.meta.name,
             "cancelled": self.cancel_event.is_set(),
             "winner": self.winner.flag if self.winner else None,
-            "agents": {
-                spec: {
-                    "findings": self.findings.get(spec, ""),
-                    "status": "running" if spec in self.solvers and not self.cancel_event.is_set()
-                             else ("won" if self.winner and self.winner.flag else "finished"),
-                }
-                for spec in self.model_specs
-            },
+            "winner_spec": self.winner_spec,
+            "agents": agents,
         }
+
+    def kill_solver(self, model_spec: str) -> bool:
+        """Cancel one specific solver in this swarm; siblings continue.
+
+        Returns True if a matching solver task was cancelled. Used by
+        the coordinator's `kill_solver` tool to terminate hung solvers
+        without taking down the whole swarm — e.g. when codex/gpt-5.5
+        is stuck at step=0 but codex/gpt-5.4-mini is making progress."""
+        # Per-solver tasks are stashed in the same order as model_specs
+        # by run() (one per spec), so we can locate the matching task
+        # by index.
+        try:
+            idx = self.model_specs.index(model_spec)
+        except ValueError:
+            return False
+        tasks = getattr(self, "_solver_tasks", [])
+        if idx >= len(tasks):
+            return False
+        t = tasks[idx]
+        if t.done():
+            return False
+        t.cancel()
+        return True
