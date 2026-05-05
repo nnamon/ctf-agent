@@ -687,6 +687,43 @@ RUN set +e; \
         || echo "passwords-top100k re-download failed (non-fatal)"; \
     true
 
+# ── i386 sysroot fix-up ─────────────────────────────────────────────────────
+# The earlier i386-sysroot block (under "qemu-user-static") fetches a hand-
+# rolled list of pinned `.deb` URLs from archive.ubuntu.com. Those pins drift
+# as Ubuntu rolls libc6 versions forward, and the URLs silently 404 — leaving
+# /opt/i386-sysroot with only ncurses extracted, no ld-linux.so.2, so
+# `qemu-i386-static ./binary` fails on every dynamically-linked i386 ELF.
+#
+# This trailing layer side-steps the pin-rot by using `apt-get download`
+# against archive.ubuntu.com (which actually hosts i386 packages — the host
+# arm64 sandbox normally talks to ports.ubuntu.com, which is arm64-only and
+# 404s on /binary-i386/). The apt-get update prints noise about ports.ubuntu
+# .com 404s for i386 indexes; those are warnings, not fatal — apt continues
+# and fetches the i386 .debs from archive.ubuntu.com successfully. Verified
+# end-to-end: `qemu-i386-static ./silver_bullet` now boots and serves its
+# menu inside the container.
+#
+# Placed at the very end of the Dockerfile so this fix doesn't invalidate
+# any of the heavy upstream layer caches (CADO-NFS, Ghidra, dotnet, etc.).
+RUN dpkg --add-architecture i386 \
+    && echo "deb [arch=i386] http://archive.ubuntu.com/ubuntu/ jammy main" \
+        > /etc/apt/sources.list.d/i386-sysroot.list \
+    && apt-get update -qq 2>/dev/null || true \
+    && rm -rf /opt/i386-sysroot \
+    && mkdir -p /opt/i386-sysroot /tmp/i386-debs \
+    && cd /tmp/i386-debs \
+    && apt-get download \
+         libc6:i386 \
+         libstdc++6:i386 \
+         libgcc-s1:i386 \
+         zlib1g:i386 \
+         libtinfo6:i386 \
+         libncurses6:i386 \
+    && for d in *.deb; do dpkg-deb -x "$d" /opt/i386-sysroot; done \
+    && cd / \
+    && rm -rf /tmp/i386-debs /var/lib/apt/lists/* \
+    && ln -sf /opt/i386-sysroot/lib/ld-linux.so.2 /lib/ld-linux.so.2
+
 # ── Tools reference ──────────────────────────────────────────────────────────
 COPY sandbox/sandbox-tools.txt /tools.txt
 
