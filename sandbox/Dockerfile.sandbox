@@ -106,11 +106,11 @@ RUN git clone --depth=1 https://github.com/keeganryan/flatter /tmp/flatter \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.cargo/bin:/root/.local/bin:$PATH"
 
-# ── Ruby gems: zsteg + seccomp-tools + evil-winrm + cewl ─────────────────
-# zsteg/seccomp-tools cover PNG steg + syscall-filter dumps; evil-winrm and
-# cewl are OSCP-style offensive utilities (PowerShell-over-WinRM and custom-
-# wordlist scraping respectively).
-RUN gem install zsteg seccomp-tools evil-winrm cewl
+# ── Ruby gems: zsteg + seccomp-tools + evil-winrm ───────────────────────
+# zsteg/seccomp-tools cover PNG steg + syscall-filter dumps;
+# evil-winrm provides PowerShell-over-WinRM. (cewl is NOT a published gem
+# despite folklore; installed via apt instead, see system-packages block.)
+RUN gem install zsteg seccomp-tools evil-winrm
 
 # ── stegseek (build from source — pre-built .deb is amd64 only) ──────────────
 RUN apt-get update && apt-get install -y libmhash-dev libmcrypt-dev libjpeg-dev zlib1g-dev \
@@ -342,7 +342,8 @@ RUN echo "wireshark-common wireshark-common/install-setuid boolean false" \
         # Web fingerprinting / scanning
         whatweb nikto \
         # SMB/AD recon (offensive — only used in authorized CTF contexts)
-        smbclient enum4linux \
+        # enum4linux dropped from jammy; using enum4linux-ng via pip instead
+        smbclient \
         # MQTT (IoT challenges)
         mosquitto-clients \
         # WebAssembly toolkit (wasm2wat / wat2wasm / wasm-decompile / wasm-objdump)
@@ -360,24 +361,24 @@ RUN echo "wireshark-common wireshark-common/install-setuid boolean false" \
         crunch \
         # SNMP enumeration
         onesixtyone snmp-mibs-downloader \
-        # Offline exploit-DB lookup (provides `searchsploit`)
-        exploitdb \
         # Pivoting via socks/http chain
         proxychains4 \
-        # Group Policy Preferences password recovery
-        gpp-decrypt \
         # Wide-net port sweeps (faster than nmap for /16+ scans)
         masscan \
         # Alternative directory busters (ffuf is already there; these handle
         # different chunking strategies and edge-cases)
         gobuster wfuzz \
-        # OSINT (subdomains, emails, hosts from public sources)
-        theharvester \
         # Wireless (WPA/WEP cracking, WPS attacks; needs a .cap file or
         # monitor-mode interface — sandbox can run aircrack-ng on captures)
         aircrack-ng reaver \
         # Cloud (AWS recon/exploitation; gcloud/az skipped — too heavy)
         awscli \
+        # Custom-wordlist generator (was incorrectly in the Ruby gem block —
+        # cewl is published as a Debian package, not a published gem)
+        cewl \
+        # SMB enumeration (smbclient is the basic client, smbmap layers on
+        # share-mapping/permission summaries)
+        smbmap \
         # PE cross-compilation
         mingw-w64 \
         # YARA CLI (yara-python already installed; this adds the binary)
@@ -413,16 +414,31 @@ RUN python3 -m pip install --no-cache-dir \
 # AD/SMB + media + Android dynamic + OSCP-style offensive tooling +
 # OSINT/Cloud/Firmware/AI-security extras — split per-tool so transitive
 # conflicts don't tank the whole layer. Best-effort.
+#
+# Dropped:
+#   * netexec  — install pulls a fork of impacket + downgrades unicorn,
+#                z3-solver, cryptography, breaking angr/claripy/joserfc.
+#                We have impacket directly; that covers the same protocols.
+#   * recon-ng — not pip-installable (no setup.py/pyproject.toml on its
+#                github root); installed separately via git clone below.
+#   * theHarvester — pypi `theharvester==0.0.1` is a stub package; the
+#                real upstream requires Python 3.12+ which we manage via
+#                uv, so a system pip install is infeasible. Skipped; we
+#                have subfinder/dnsrecon/photon/sherlock for OSINT.
 RUN set +e; \
-    for pkg in impacket netexec drozer yt-dlp \
+    for pkg in impacket drozer yt-dlp \
                responder mitm6 pypykatz dnsrecon \
-               pwncat-cs updog bloodhound-py \
-               sherlock-project photon recon-ng \
-               prowler \
+               pwncat-cs updog bloodhound \
+               sherlock-project photon \
+               prowler gpp-decrypt \
                jefferson ubi_reader \
                adversarial-robustness-toolbox garak; do \
       python3 -m pip install --no-cache-dir "$pkg" || echo "$pkg install failed (non-fatal)"; \
     done; \
+    # enum4linux-ng has no pypi release, install from git
+    python3 -m pip install --no-cache-dir \
+        "git+https://github.com/cddmp/enum4linux-ng.git" \
+        || echo "enum4linux-ng git install failed (non-fatal)"; \
     true
 
 # Symbolic execution complements. manticore/triton occasionally hit numpy
@@ -654,6 +670,19 @@ RUN URL=$(curl -fsSL https://api.github.com/repos/pwntester/ysoserial.net/releas
 RUN curl -fsSL https://foundry.paradigm.xyz | bash \
     && /root/.foundry/bin/foundryup
 ENV PATH="/root/.foundry/bin:$PATH"
+
+# ── searchsploit (offline exploit-db CLI — `exploitdb` apt was dropped) ─────
+RUN git clone --depth=1 https://gitlab.com/exploit-database/exploitdb.git /opt/exploitdb \
+    && ln -sf /opt/exploitdb/searchsploit /usr/local/bin/searchsploit \
+    || echo "exploitdb clone failed (non-fatal)"
+
+# ── recon-ng (modular recon framework — git only, no pypi release) ──────────
+RUN git clone --depth=1 https://github.com/lanmaster53/recon-ng.git /opt/recon-ng \
+    && python3 -m pip install --no-cache-dir -r /opt/recon-ng/REQUIREMENTS \
+    && printf '#!/bin/bash\nexec python3 /opt/recon-ng/recon-ng "$@"\n' \
+       > /usr/local/bin/recon-ng \
+    && chmod +x /usr/local/bin/recon-ng \
+    || echo "recon-ng install failed (non-fatal)"
 
 # ── phpggc (PHP deserialization gadget chains — pairs with ysoserial[.net]) ─
 RUN git clone --depth=1 https://github.com/ambionics/phpggc /opt/phpggc \

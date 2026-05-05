@@ -42,6 +42,8 @@ def _classify_failure(err: str) -> str:
         return "SIGSEGV"
     if "exit code: -6" in err:
         return "SIGABRT"
+    if "hit your limit" in err.lower() or "limit · resets" in err.lower():
+        return "RATE_LIMIT"
     return "OTHER"
 
 
@@ -56,6 +58,18 @@ def _looks_like_aup_refusal(body: str) -> bool:
         "violate our Usage Policy" in body
         or "API Error: Claude Code is unable to respond" in body
     )
+
+
+def _looks_like_rate_limit_stub(body: str) -> bool:
+    """Detect Claude rate-limit error returned as a tiny string.
+
+    The Claude SDK sometimes returns "You've hit your limit · resets <time>"
+    as a normal completion (not an exception). At ~50 chars total, this
+    would otherwise be saved as the writeup file. Scan + size-gate.
+    """
+    if not body or len(body) > 200:
+        return False
+    return "hit your limit" in body or "limit · resets" in body
 
 
 SYSTEM_PROMPT = """You are compiling a rigorous, academic-quality CTF writeup
@@ -491,6 +505,19 @@ async def generate_writeup(
                 settings=settings,
                 timeout_s=900,
             )
+
+        # Claude SDK can return a ~50-char rate-limit error string as a
+        # successful response (e.g. "You've hit your limit · resets 1:50am").
+        # Saving that as the writeup is worse than failing — caller gets
+        # a stub file that looks like a real writeup. Detect and refuse;
+        # operator can re-run after the limit window resets.
+        if markdown and _looks_like_rate_limit_stub(markdown):
+            logger.warning(
+                "Postmortem %s: model=%s returned a rate-limit stub (%r); "
+                "refusing to save. Re-run after the limit window resets.",
+                meta.name, model, markdown[:120],
+            )
+            return None
 
         if not markdown:
             logger.warning("Postmortem returned empty body for %s", meta.name)
