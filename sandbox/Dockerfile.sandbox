@@ -195,11 +195,17 @@ RUN mkdir -p /opt/wordlists \
 # build).
 # /opt/python3.12 holds the standalone interpreter; symlink to
 # /usr/local/bin/python3.12 so existing references still work.
+# uv-installed CPython is PEP 668 marked (externally-managed-environment),
+# so `python3.12 -m pip install ...` refuses without --break-system-packages.
+# Skip the broken-via-pip path and use `uv tool install` instead — it
+# creates an isolated venv under /root/.local/share/uv/tools and shims
+# `trailmark` onto PATH automatically. python3.12 itself is still
+# accessible at /usr/local/bin/python3.12 for ad-hoc scripts; for
+# trailmark API usage do `uv run --python 3.12 python -c 'import trailmark; ...'`.
 RUN uv python install 3.12 --install-dir /opt/uv-pythons \
     && PY312=$(uv python find 3.12) \
     && ln -sf "$PY312" /usr/local/bin/python3.12 \
-    && python3.12 -m ensurepip --upgrade \
-    && python3.12 -m pip install --no-cache-dir trailmark \
+    && uv tool install --python 3.12 trailmark \
     || echo "python3.12/trailmark install failed (non-fatal)"
 
 # ── FLARE malware-RE toolkit + Windows-PE emulators ─────────────────────────
@@ -219,8 +225,7 @@ RUN python3 -m pip install --no-cache-dir \
     viv-utils \
     pyelftools \
     speakeasy-emulator \
-    qiling \
-    peframe
+    qiling
 
 # ── qemu-user-static (foreign-arch Linux ELFs) ───────────────────────────────
 # Lets the agent execute non-host-arch Linux binaries directly: router

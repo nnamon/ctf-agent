@@ -54,8 +54,6 @@ llvm-objdump       LLVM-based disassembler. Better at exotic archs (RISC-V, ARM
 ndisasm            Netwide disassembler from NASM. Bare-byte x86 disasm — no
                    ELF parsing required. ndisasm -b 64 shellcode.bin.
 nasm               Netwide assembler. nasm -f elf64 shell.asm -o shell.o.
-peframe            PE static analysis (sections, imports, suspicious strings,
-                   yara matches, AV evasion indicators). peframe sample.exe
 readelf            ELF header info. readelf -a binary.
 nm                 Symbol listing. nm binary.
 upx                UPX unpacker. upx -d packed.exe (works on ELF + PE).
