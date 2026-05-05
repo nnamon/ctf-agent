@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -212,18 +213,48 @@ class ChallengeSwarm:
             return display, is_confirmed
 
     async def _run_solver(self, model_spec: str) -> SolverResult | None:
-        solver = self._create_solver(model_spec)
-        self.solvers[model_spec] = solver
-
-        try:
-            result, final_solver = await self._run_solver_loop(solver, model_spec)
-            solver = final_solver
-            return result
-        except Exception as e:
-            logger.error(f"[{self.meta.name}/{model_spec}] Fatal: {e}", exc_info=True)
-            return None
-        finally:
-            await solver.stop()
+        # Codex MCP transport occasionally drops with ConnectionResetError
+        # during solver.start() ("Connection lost") — typically a brief
+        # backend hiccup that resolves within seconds. Retry up to 2x
+        # with exponential backoff before giving up. We rebuild the
+        # solver each retry because the underlying transport is dead.
+        last_err: BaseException | None = None
+        for attempt in range(3):
+            if self.cancel_event.is_set():
+                return None
+            solver = self._create_solver(model_spec)
+            self.solvers[model_spec] = solver
+            try:
+                result, final_solver = await self._run_solver_loop(solver, model_spec)
+                solver = final_solver
+                return result
+            except (ConnectionResetError, ConnectionError) as e:
+                last_err = e
+                logger.warning(
+                    "[%s/%s] codex transport dropped (attempt %d/3): %s",
+                    self.meta.name, model_spec, attempt + 1, e,
+                )
+                with contextlib.suppress(Exception):
+                    await solver.stop()
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt * 5)  # 5s, 10s
+                continue
+            except Exception as e:
+                logger.error(f"[{self.meta.name}/{model_spec}] Fatal: {e}", exc_info=True)
+                with contextlib.suppress(Exception):
+                    await solver.stop()
+                return None
+            finally:
+                # `solver.stop()` for the success path. The retry-loop
+                # branches above stop manually before continuing so that
+                # we don't double-stop on retry. Catch the case where
+                # the loop returned without going through except/retry.
+                pass
+        logger.error(
+            "[%s/%s] codex transport gave up after 3 attempts: %s",
+            self.meta.name, model_spec, last_err,
+        )
+        return None
 
     async def _run_solver_loop(self, solver, model_spec: str) -> tuple[SolverResult, SolverProtocol]:
         """Inner loop: start → run → bump → run → ..."""
