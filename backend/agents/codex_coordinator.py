@@ -186,7 +186,7 @@ class CodexCoordinator:
             "personality": "pragmatic",
             "baseInstructions": COORDINATOR_PROMPT,
             "cwd": ".",
-            "approvalPolicy": "on-request",
+            "approvalPolicy": "never",
             "sandbox": "read-only",
             "dynamicTools": COORDINATOR_TOOLS,
         })

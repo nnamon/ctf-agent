@@ -366,7 +366,15 @@ class CodexSolver:
             "personality": "pragmatic",
             "baseInstructions": sandbox_preamble + system_prompt,
             "cwd": "/challenge",
-            "approvalPolicy": "on-request",
+            # `never` = codex auto-denies any request for escalation. Some
+            # models (notably gpt-5.4-mini) sporadically pick the codex
+            # built-in `exec_command` tool with `sandbox_permissions:
+            # require_escalated` instead of our dynamic `bash` tool;
+            # `on-request` made codex send an approval-request notification
+            # we don't handle, leaving the solver wedged. With `never` the
+            # built-in tool fails fast, the model sees the failure, and
+            # falls back to the dynamic tool.
+            "approvalPolicy": "never",
             "sandbox": "read-only",
             "dynamicTools": sandbox_tools,
         }

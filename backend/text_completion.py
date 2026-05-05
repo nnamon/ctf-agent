@@ -331,7 +331,7 @@ async def _codex_attempt(model: str, system: str, user: str, timeout_s: int) -> 
             "personality": "pragmatic",
             "baseInstructions": system,
             "cwd": ".",
-            "approvalPolicy": "on-request",
+            "approvalPolicy": "never",
             "sandbox": "read-only",
             "dynamicTools": [],
         })
