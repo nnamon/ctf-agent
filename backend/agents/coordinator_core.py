@@ -313,6 +313,13 @@ async def do_read_solver_trace(deps: CoordinatorDeps, challenge_name: str, model
                     summary.append(f"step {d.get('step','?')} REASONING: {rtext}")
                 elif t == "codex_stderr":
                     summary.append(f"** codex_stderr: {str(d.get('text', d.get('line','')))[:600]}")
+                elif t == "subprocess_exit":
+                    summary.append(
+                        f"** subprocess_exit: rc={d.get('returncode')} "
+                        f"sig={d.get('signal','')} elapsed={d.get('elapsed_s')}s "
+                        f"idle={d.get('last_event_idle_s')}s "
+                        f"pending_rpcs={d.get('pending_rpcs')} step={d.get('step','?')}"
+                    )
                 else:
                     summary.append(f"{t}: {str(d)[:80]}")
             except Exception:

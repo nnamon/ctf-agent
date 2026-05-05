@@ -1720,6 +1720,15 @@ function renderTrace(lines) {
         <span class="trace-tag stderr">⚠ codex_stderr</span>
         <pre class="trace-body code">${escapeHTML(shown)}</pre>
       </div>`;
+    } else if (e.type === 'subprocess_exit') {
+      const summary = `rc=${e.returncode} sig=${e.signal || 'n/a'} ` +
+        `· elapsed=${e.elapsed_s}s · idle=${e.last_event_idle_s}s ` +
+        `· pending_rpcs=${e.pending_rpcs} · step=${e.step ?? '?'}`;
+      html += `<div class="trace-row">
+        <span class="trace-time">${escapeHTML(t)}</span>
+        <span class="trace-tag stderr">☠ subprocess_exit</span>
+        <span class="trace-body">${escapeHTML(summary)}</span>
+      </div>`;
     } else if (e.type === 'error' || (e.type && e.type.includes('error'))) {
       html += `<div class="trace-row">
         <span class="trace-time">${escapeHTML(t)}</span>

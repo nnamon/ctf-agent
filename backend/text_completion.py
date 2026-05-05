@@ -29,6 +29,7 @@ import asyncio
 import itertools
 import json
 import logging
+import time
 from typing import Any
 
 from backend.codex_stderr import coalesce_stderr
@@ -211,6 +212,7 @@ async def _codex_attempt(model: str, system: str, user: str, timeout_s: int) -> 
             if not line:
                 turn_done.set()
                 return
+            last_event_at["ts"] = time.time()
             try:
                 msg = json.loads(line)
             except json.JSONDecodeError:
@@ -264,8 +266,35 @@ async def _codex_attempt(model: str, system: str, user: str, timeout_s: int) -> 
                     ) or "unknown"
                 turn_done.set()
 
+    proc_started_at = time.time()
+    last_event_at: dict[str, float | None] = {"ts": None}
+
+    async def _watch_exit() -> None:
+        try:
+            rc = await proc.wait()
+        except asyncio.CancelledError:
+            raise
+        sig = ""
+        if rc is not None and rc < 0:
+            try:
+                import signal as _sig
+                sig = _sig.Signals(-rc).name
+            except (ValueError, AttributeError):
+                sig = f"signal {-rc}"
+        now = time.time()
+        idle = round(now - last_event_at["ts"], 2) if last_event_at["ts"] else None
+        logger.warning(
+            "codex(text_completion %s) subprocess exited rc=%s sig=%s "
+            "elapsed=%ss idle_since_last_event=%ss pending_rpcs=%d",
+            model, rc, sig or "n/a",
+            round(now - proc_started_at, 2), idle, len(pending),
+        )
+        # Unblock waiters in the main path
+        turn_done.set()
+
     reader = asyncio.create_task(_read_loop())
     stderr_reader = asyncio.create_task(_stderr_loop())
+    exit_watcher = asyncio.create_task(_watch_exit())
 
     async def _rpc(method: str, params: dict | None = None) -> dict:
         assert proc.stdin
@@ -321,6 +350,7 @@ async def _codex_attempt(model: str, system: str, user: str, timeout_s: int) -> 
     finally:
         reader.cancel()
         stderr_reader.cancel()
+        exit_watcher.cancel()
         try:
             proc.terminate()
             await asyncio.wait_for(proc.wait(), timeout=5)

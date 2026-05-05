@@ -281,8 +281,11 @@ class CodexSolver:
         self._pending_responses: dict[int, asyncio.Future] = {}
         self._reader_task: asyncio.Task | None = None
         self._stderr_task: asyncio.Task | None = None
+        self._exit_task: asyncio.Task | None = None
         self._turn_done: asyncio.Event = asyncio.Event()
         self._last_tool_call_at: float | None = None
+        self._proc_started_at: float | None = None
+        self._last_codex_event_at: float | None = None
 
     async def start(self) -> None:
         await self.sandbox.start()
@@ -322,9 +325,11 @@ class CodexSolver:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        self._proc_started_at = time.time()
 
         self._reader_task = asyncio.create_task(self._read_loop())
         self._stderr_task = asyncio.create_task(self._read_stderr())
+        self._exit_task = asyncio.create_task(self._watch_exit())
 
         # Initialize handshake: send initialize request, then initialized notification
         await self._rpc("initialize", {
@@ -441,6 +446,63 @@ class CodexSolver:
         except Exception as e:
             logger.error(f"[{self.agent_name}] stderr reader crashed: {e}")
 
+    async def _watch_exit(self) -> None:
+        """Watch for codex subprocess death and record forensics.
+
+        Without this, "Connection lost" surfaces only after WE try to
+        write to a dead pipe — too late to capture useful state. This
+        task awaits proc.wait() concurrently and, the moment the
+        subprocess exits, snapshots:
+
+          - returncode (or `-N` if killed by signal N)
+          - elapsed wall-clock since spawn
+          - time since the last incoming codex event (gap before death)
+          - in-flight RPC count (was a request being served when it died?)
+
+        Combined with the stderr sidecar, this turns most "Connection
+        lost" mysteries into a single grep'able trace event.
+        """
+        if not self._proc:
+            return
+        try:
+            rc = await self._proc.wait()
+        except asyncio.CancelledError:
+            raise
+        sig = ""
+        if rc is not None and rc < 0:
+            try:
+                import signal as _sig
+                sig = _sig.Signals(-rc).name
+            except (ValueError, AttributeError):
+                sig = f"signal {-rc}"
+        now = time.time()
+        elapsed = round(now - self._proc_started_at, 2) if self._proc_started_at else None
+        idle = (
+            round(now - self._last_codex_event_at, 2)
+            if self._last_codex_event_at else None
+        )
+        try:
+            self.tracer.event(
+                "subprocess_exit",
+                returncode=rc,
+                signal=sig,
+                elapsed_s=elapsed,
+                last_event_idle_s=idle,
+                pending_rpcs=len(self._pending_responses),
+                step=self._step_count,
+            )
+        except Exception:
+            pass
+        logger.warning(
+            "[%s] codex subprocess exited rc=%s sig=%s elapsed=%ss "
+            "idle_since_last_event=%ss pending_rpcs=%d step=%d",
+            self.agent_name, rc, sig or "n/a", elapsed, idle,
+            len(self._pending_responses), self._step_count,
+        )
+        # Unblock any waiters so the solver can proceed to its except path
+        # rather than waiting on turn_done forever.
+        self._turn_done.set()
+
     async def _read_loop(self) -> None:
         """Read JSON-RPC messages: responses, notifications, and server requests."""
         assert self._proc and self._proc.stdout
@@ -449,6 +511,7 @@ class CodexSolver:
             if not line:
                 self._turn_done.set()
                 break
+            self._last_codex_event_at = time.time()
             try:
                 msg = json.loads(line)
             except json.JSONDecodeError:
@@ -829,6 +892,12 @@ class CodexSolver:
             self._stderr_task.cancel()
             try:
                 await self._stderr_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self._exit_task:
+            self._exit_task.cancel()
+            try:
+                await self._exit_task
             except (asyncio.CancelledError, Exception):
                 pass
         if self._proc:
