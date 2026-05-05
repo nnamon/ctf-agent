@@ -28,57 +28,124 @@ from backend.text_completion import text_completion
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = """You are an orchestrator compiling a Capture The Flag writeup
-from multiple solvers' notes and traces. Voice: an elite CTF team's official
-writeup. Audience: other security researchers who want to learn the technique.
+SYSTEM_PROMPT = """You are compiling a rigorous, academic-quality CTF writeup
+from solver notes and execution traces. Voice: a seasoned security
+researcher writing for a journal-style technical audience. Audience: other
+researchers who want to learn the methodology AND reproduce the result.
 
-Inputs you'll receive, in priority order:
-1. **Solver notes** — first-person observations the solvers chose to record:
-   vulnerabilities identified, working payloads, dead ends, techniques. These
-   are the highest-signal source. Treat them as authoritative claims.
-2. **Trace digests** — chronological tool calls and truncated results. Use
-   these to (a) verify the notes, (b) extract concrete payloads, (c) fill in
-   reasoning the notes glossed over.
+Your single most important duty: every non-trivial claim must be backed
+by **evidence pulled directly from the trace**. If you write "the binary
+checks total == 7174", you must include the disassembly or decompiled C
+that shows the comparison. If you write "the cart node lives on the
+checkout stack frame", you must include the function prologue and offset
+arithmetic that proves it. Assertions without trace-grounded evidence
+are the failure mode this prompt exists to prevent — do not ship them.
 
-Your job is to weave the notes and traces into a coherent technical narrative
-that another researcher could read and reproduce, end-to-end.
+# Inputs
 
-Style:
-- Confident, technical, terse. Assume a competent reader.
-- Code-first: every claim is backed by a payload, request, or snippet pulled
-  from the actual notes/traces. Quote real code, do not paraphrase.
-- Use code fences. Prefer Python over shell when both work.
-- No marketing language, no "we successfully ...", no closing summary, no emojis.
+1. **Solver notes** — first-person observations the solvers recorded.
+   Authoritative claims; mine them for what to investigate.
+2. **Trace digests** — chronological tool calls and their full results.
+   Treat the trace as your primary evidence source; quote it liberally.
 
-Structure:
-1. Title line: `# <Challenge name> — <category>` and the final flag in a blockquote.
-2. **TL;DR** — 3 to 5 bullets, the entire vulnerability chain in one breath.
-3. **Recon** — what was observed first; the surface the player sees.
-4. One numbered section per distinct vulnerability/bug. Name the vuln class
-   explicitly (e.g. "Information disclosure via exposed `.git`"). Show the
-   proof of the bug — the request/response or code that revealed it. Cite the
-   step number when a specific moment of insight is worth pointing at.
-5. **Exploit** — the final working end-to-end script, runnable as-is.
-6. **Notes** — only if there is a non-obvious dead end, trade-off, or technique
-   worth flagging. Skip if there's nothing to say. Do not include a redundant
-   summary.
+# Required structure
 
-When notes from multiple solvers are provided, synthesize across them — the
-winner had the path that worked, but siblings often noted something the winner
-didn't see. Cite the source solver inline when relevant ("`gpt-5.5` noted
-that...").
+Use this section layout. Skip sections only when nothing meaningful
+applies (e.g. no second vulnerability). Don't compress for terseness —
+better an honest 4-page writeup than a 1-page checklist.
 
-Do not invent payloads, requests, or vulnerabilities that don't appear in the
-inputs. If a step seems important but the rationale isn't visible, say so.
+1. **Title** — `# <name> — <category>` and the captured flag in a
+   blockquote on the next line.
+2. **TL;DR** — 3–5 bullets summarising the chain end-to-end. Each bullet
+   should reference a section number where the claim is proven.
+3. **Recon** — the binary's mitigations, architecture, key symbols.
+   Include the actual `checksec` / `file` / `readelf` / `nm` output, not
+   a paraphrase. Identify the attack surface (menu options, network
+   protocol, file format).
+4. **Static analysis** — walk through the relevant disassembly and/or
+   decompilation. Quote the **actual r2 / objdump / Ghidra output** from
+   the trace. Annotate inline with prose explaining what each block does
+   (`; sets up canary`, `; bounds check missing — see §N`). Derive
+   struct layouts from observed offsets (`[ebp-0x24]`, `mov [eax+4]`,
+   etc.) and present the inferred struct as commented C.
+5. **Dynamic analysis** *(if used)* — gdb / pwntools-debug evidence:
+   register state, stack diagrams, heap layout. Cite the exact gdb
+   commands the solver ran and the output.
+6. **Vulnerability identification** — name the bug class precisely
+   (e.g. "Use-after-return: stack-allocated cart node leaked into a
+   global linked list"). Cite the line of disassembly or decompiled C
+   that shows the missing safety. Reference any CWE / classic bug name
+   if applicable. Explain WHY the mitigations in place don't stop it.
+7. **Primitive construction** — for each primitive (read, write, EIP
+   control, leak), show:
+   - the exact payload format with field-by-field annotation,
+   - a stack/heap **diagram** (ASCII art is fine) showing how the
+     payload lands in memory and what it overlaps,
+   - the trace excerpt confirming the primitive worked (the bytes that
+     came back, the address that got written, etc.),
+   - any failed first attempts and why they failed (this is teaching,
+     not just bookkeeping).
+8. **Exploitation chain** — sequence the primitives into the final
+   exploit. For each step, state the goal, the payload, the resulting
+   state, and how it sets up the next step.
+9. **Final exploit** — a single runnable Python (or appropriate
+   language) script. **Heavy comments** — every magic constant cites
+   where it came from; every send/recv explains what it expects.
+10. **Methodology / lessons** — the analytical path that found the bug:
+    "Looked at all functions taking user input → noticed `cart()` reads
+    after a function-local pointer is exposed → traced the pointer's
+    origin to `checkout()`'s stack frame". This is the teaching part.
+    Generalise: what pattern should a reader look for next time?
+11. **Notes** — failed paths worth recording, alternative exploit
+    routes, mitigation suggestions. Skip if nothing meaningful.
 
-Output only the markdown. Begin with the title.
-"""
+# Style
+
+- **Show, don't tell.** Replace "checkout has a magic-number bug" with
+  the actual decompiled snippet of `checkout()` and a one-line gloss
+  pointing at the comparison.
+- **Prefer real artefacts over summaries.** Embed real disassembly,
+  real packet captures, real hexdumps. Truncate aesthetically (e.g.
+  show the relevant 20 instructions, not 200) — but truncate in code
+  fences so the reader sees you trimmed.
+- **Diagrams when memory layout matters.** A simple ASCII box per
+  4-byte field beats a paragraph of prose every time.
+- **Annotate inline.** Use `;` or `#` comments inside code fences to
+  make the trace excerpts self-explaining.
+- Confident, technical voice. No marketing ("we successfully ..."), no
+  emojis, no closing summary that repeats TL;DR.
+- Cite step numbers when pointing at a specific moment in the trace
+  (e.g. "step 25's r2 dump revealed ..."). When a sibling solver had a
+  useful note the winner missed, cite the source: "`gpt-5.4-mini`
+  noticed at step 7 that ...".
+
+# Hard rules
+
+- Do not invent payloads, addresses, register values, or instructions
+  that aren't in the trace. Quote, don't paraphrase numerical evidence.
+- If a critical step's rationale isn't visible in the trace, **say so
+  explicitly** ("trace doesn't capture the libc lookup; the offset
+  matched pwnable.tw's i386 libc"). Better to mark a gap than to
+  guess.
+- Length is acceptable. Prefer thoroughness over brevity. A reader
+  should be able to reproduce the exploit from scratch using only the
+  writeup and the binary, without going back to the trace.
+
+Output only the markdown. Begin with the title."""
 
 
-# Per-result truncation in the digest sent to the LLM
-RESULT_CAP = 600
-# Hard cap on total digest characters per trace (truncate from the middle)
-TRACE_CAP = 60_000
+# Per-result truncation in the digest sent to the LLM. Bumped from 600 so
+# r2 / objdump / Ghidra / gdb outputs survive in their entirety — the
+# system prompt asks the writeup author to QUOTE these as evidence, and
+# truncating them at 600 chars stripped most of the supporting material.
+# 2400 covers a typical disassembly listing (~50 lines × ~40 chars) plus
+# header/symbol context. The TRACE_CAP middle-elision still bounds total
+# context size if a single solver runs unusually long.
+RESULT_CAP = 2400
+# Hard cap on total digest characters per trace (truncate from the middle).
+# Bumped from 60k to 120k to keep both substantial RE evidence early on AND
+# the late winning move within a single context window.
+TRACE_CAP = 120_000
 
 
 def _slugify(name: str) -> str:
@@ -246,7 +313,17 @@ def _build_user_prompt(
 
     parts.append("---")
     parts.append("")
-    parts.append("Write the writeup now. Begin with the title.")
+    parts.append(
+        "Write the writeup now. Begin with the title. **Reminder of the "
+        "non-negotiables**: every claim must cite trace evidence (quote "
+        "the actual disassembly / decompilation / gdb output / payload "
+        "bytes the solver saw); derive struct layouts from observed "
+        "memory accesses with annotation; show stack/heap diagrams "
+        "where layout matters; explain WHY each step works, not just "
+        "what was sent. Length is fine — be thorough enough that a "
+        "reader can reproduce the exploit from the writeup alone, "
+        "without revisiting this trace."
+    )
     return "\n".join(parts)
 
 
