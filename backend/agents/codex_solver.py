@@ -21,6 +21,7 @@ import os
 import time
 from typing import Any
 
+from backend.codex_stderr import coalesce_stderr
 from backend.cost_tracker import CostTracker
 from backend.backends import Backend
 from backend.exec_env import EnvRegistry
@@ -279,7 +280,9 @@ class CodexSolver:
         self._compact_requested = False
         self._pending_responses: dict[int, asyncio.Future] = {}
         self._reader_task: asyncio.Task | None = None
+        self._stderr_task: asyncio.Task | None = None
         self._turn_done: asyncio.Event = asyncio.Event()
+        self._last_tool_call_at: float | None = None
 
     async def start(self) -> None:
         await self.sandbox.start()
@@ -317,10 +320,11 @@ class CodexSolver:
             "codex", "app-server",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
 
         self._reader_task = asyncio.create_task(self._read_loop())
+        self._stderr_task = asyncio.create_task(self._read_stderr())
 
         # Initialize handshake: send initialize request, then initialized notification
         await self._rpc("initialize", {
@@ -410,6 +414,33 @@ class CodexSolver:
         self._proc.stdin.write((json.dumps(msg) + "\n").encode())
         await self._proc.stdin.drain()
 
+    async def _read_stderr(self) -> None:
+        """Drain codex app-server stderr to a sibling log file and trace events.
+
+        We previously sent stderr to DEVNULL, which made it impossible to
+        diagnose `Connection lost` (subprocess died on init). Capture it
+        verbatim so codex CLI panics, auth failures, and config errors are
+        observable.
+        """
+        assert self._proc and self._proc.stderr
+        stderr_path = f"{self.tracer.path}.stderr"
+        try:
+            with open(stderr_path, "ab") as fh:
+                async for record in coalesce_stderr(self._proc.stderr):
+                    fh.write(record)
+                    fh.flush()
+                    text = record.decode("utf-8", errors="replace").rstrip()
+                    if text:
+                        logger.warning(f"[{self.agent_name}] codex stderr: {text[:800]}")
+                        try:
+                            self.tracer.event("codex_stderr", text=text[:2000])
+                        except Exception:
+                            pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"[{self.agent_name}] stderr reader crashed: {e}")
+
     async def _read_loop(self) -> None:
         """Read JSON-RPC messages: responses, notifications, and server requests."""
         assert self._proc and self._proc.stdout
@@ -445,7 +476,8 @@ class CodexSolver:
             # Notification: item completed — assistant text arrives here
             elif method == "item/completed":
                 item = params.get("item", params)
-                if item.get("type") == "agentMessage":
+                item_type = item.get("type")
+                if item_type == "agentMessage":
                     text = item.get("text", "")
                     phase = item.get("phase")  # "commentary" | "final_answer" | null
                     if text:
@@ -457,6 +489,26 @@ class CodexSolver:
                                     self._structured_output = parsed
                             except (json.JSONDecodeError, ValueError):
                                 pass
+                elif item_type == "reasoning":
+                    # Capture chain-of-thought so wedges (model thinking
+                    # without ever issuing a tool call) are visible in the
+                    # trace and to the coordinator. Multiple shapes seen in
+                    # the wild: {text}, {summary}, or {content:[{text}]}.
+                    rtext = item.get("text") or item.get("summary") or ""
+                    if not rtext:
+                        content = item.get("content")
+                        if isinstance(content, list):
+                            parts = []
+                            for c in content:
+                                if isinstance(c, dict):
+                                    parts.append(c.get("text") or c.get("summary") or "")
+                            rtext = "\n".join(p for p in parts if p)
+                    if rtext:
+                        self.tracer.event(
+                            "reasoning",
+                            text=rtext[:3000],
+                            step=self._step_count,
+                        )
 
             # Notification: turn completed — signals the turn is done
             elif method == "turn/completed":
@@ -532,6 +584,7 @@ class CodexSolver:
             args = {}
 
         self._step_count += 1
+        self._last_tool_call_at = time.time()
         self.tracer.tool_call(tool_name, args, self._step_count)
 
         loop_status = self.loop_detector.check(tool_name, args)
@@ -767,6 +820,12 @@ class CodexSolver:
             self._reader_task.cancel()
             try:
                 await self._reader_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self._stderr_task:
+            self._stderr_task.cancel()
+            try:
+                await self._stderr_task
             except (asyncio.CancelledError, Exception):
                 pass
         if self._proc:

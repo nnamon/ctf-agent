@@ -28,6 +28,36 @@ from backend.text_completion import text_completion
 logger = logging.getLogger(__name__)
 
 
+def _classify_failure(err: str) -> str:
+    """Bucket a postmortem failure into a stable label for logs/events.
+
+    The classification drives operator visibility, not auto-cascade
+    decisions (per ops policy, only opus → codex/gpt-5.5 is automatic).
+    """
+    if "TimeoutError" in err or "wait_for" in err or "asyncio.exceptions.TimeoutError" in err:
+        return "TIMEOUT"
+    if "violate our Usage Policy" in err or "Claude Code is unable to respond" in err:
+        return "REFUSAL"
+    if "exit code: -11" in err or "Cannot write to terminated process" in err:
+        return "SIGSEGV"
+    if "exit code: -6" in err:
+        return "SIGABRT"
+    return "OTHER"
+
+
+def _looks_like_aup_refusal(body: str) -> bool:
+    """Detect AUP refusal anywhere in `body`, not just the prefix.
+
+    Opus has been observed to write a substantive partial writeup and
+    then append the refusal text at the very end, leaving the prefix
+    looking fine. Scan the whole body.
+    """
+    return (
+        "violate our Usage Policy" in body
+        or "API Error: Claude Code is unable to respond" in body
+    )
+
+
 SYSTEM_PROMPT = """You are compiling a rigorous, academic-quality CTF writeup
 from solver notes and execution traces. Voice: a seasoned security
 researcher writing for a journal-style technical audience. Audience: other
@@ -406,11 +436,13 @@ async def generate_writeup(
             duration_s=duration_s,
         )
 
-        # Generate via the requested model; on certain transient failures
-        # (claude-agent-sdk's bundled CLI SIGSEGVs, AUP refusals on
-        # claude-opus-4-7) fall back to a known-stable codex model so the
-        # writeup pipeline doesn't silently drop the post-mortem.
+        # Generate via the requested model; on transient failures
+        # (claude-agent-sdk SIGSEGVs, AUP refusals on claude-opus-*)
+        # fall back ONCE to a known-stable codex model. Any failure of
+        # the fallback is propagated — operator decides next steps
+        # manually rather than chaining further automatic retries.
         FALLBACK_MODEL = "codex/gpt-5.5"
+        markdown = ""
         try:
             markdown = await text_completion(
                 model_spec=model,
@@ -421,17 +453,12 @@ async def generate_writeup(
             )
         except Exception as e:
             err = str(e)
-            transient = (
-                "Cannot write to terminated process" in err
-                or "exit code: -11" in err
-                or "exit code: -6" in err
-                or "violate our Usage Policy" in err
-            )
+            klass = _classify_failure(err)
+            transient = klass in ("REFUSAL", "SIGSEGV", "SIGABRT")
             if transient and model != FALLBACK_MODEL:
                 logger.warning(
-                    "Postmortem %s failed with transient error (%s); "
-                    "retrying with %s",
-                    meta.name, err[:120], FALLBACK_MODEL,
+                    "Postmortem %s: %s on %s (%s); falling back to %s",
+                    meta.name, klass, model, err[:120], FALLBACK_MODEL,
                 )
                 markdown = await text_completion(
                     model_spec=FALLBACK_MODEL,
@@ -441,17 +468,21 @@ async def generate_writeup(
                     timeout_s=900,
                 )
             else:
-                raise
+                logger.warning(
+                    "Postmortem %s: %s on %s (%s); not auto-cascading",
+                    meta.name, klass, model, err[:120],
+                )
+                raise RuntimeError(f"{klass}: {err}") from e
 
-        # Sometimes Claude SDK returns the AUP-refusal text as a normal
-        # string instead of raising — detect and retry.
-        if markdown and (
-            "violate our Usage Policy" in markdown[:500]
-            or "API Error: Claude Code is unable to respond" in markdown[:500]
-        ) and model != FALLBACK_MODEL:
+        # Sometimes the underlying SDK returns refusal text as a normal
+        # string instead of raising. Scan the WHOLE body, not just the
+        # prefix — opus has been observed appending refusal at the end
+        # of an otherwise substantive draft.
+        if markdown and _looks_like_aup_refusal(markdown) and model != FALLBACK_MODEL:
             logger.warning(
-                "Postmortem %s came back as AUP refusal; retrying with %s",
-                meta.name, FALLBACK_MODEL,
+                "Postmortem %s: REFUSAL embedded in body (%d chars produced); "
+                "falling back to %s",
+                meta.name, len(markdown), FALLBACK_MODEL,
             )
             markdown = await text_completion(
                 model_spec=FALLBACK_MODEL,

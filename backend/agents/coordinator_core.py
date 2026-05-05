@@ -308,6 +308,11 @@ async def do_read_solver_trace(deps: CoordinatorDeps, challenge_name: str, model
                     summary.append(f"** {t}: {json.dumps({k:v for k,v in d.items() if k != 'ts'})}")
                 elif t == "usage":
                     summary.append(f"usage: in={d.get('input_tokens',0)} out={d.get('output_tokens',0)} cost=${d.get('cost_usd',0):.4f}")
+                elif t == "reasoning":
+                    rtext = str(d.get("text", ""))[:1500]
+                    summary.append(f"step {d.get('step','?')} REASONING: {rtext}")
+                elif t == "codex_stderr":
+                    summary.append(f"** codex_stderr: {str(d.get('text', d.get('line','')))[:600]}")
                 else:
                     summary.append(f"{t}: {str(d)[:80]}")
             except Exception:

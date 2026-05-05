@@ -428,6 +428,8 @@ pre.log {
 .trace-tag.result { color: var(--md-success); }
 .trace-tag.usage  { color: var(--md-warning); }
 .trace-tag.error  { color: var(--md-sys-color-error); }
+.trace-tag.reason { color: var(--md-sys-color-tertiary); font-style: italic; }
+.trace-tag.stderr { color: var(--md-sys-color-error); opacity: .8; }
 .trace-step {
   font-family: "Roboto Mono", monospace;
   color: var(--md-sys-color-outline); font-size: 10px; margin-left: 6px;
@@ -1699,6 +1701,24 @@ function renderTrace(lines) {
         <span class="trace-time">${escapeHTML(t)}</span>
         <span class="trace-tag usage">$ usage</span>
         <span class="trace-body">in:${ic} cached:${cc} out:${oc} · $${cost}</span>
+      </div>`;
+    } else if (e.type === 'reasoning') {
+      const rtext = String(e.text || '');
+      const tooLong = rtext.length > 600;
+      const shown = tooLong ? rtext.slice(0, 600) + '\\n…[+' + (rtext.length - 600) + ' chars]' : rtext;
+      html += `<div class="trace-row">
+        <span class="trace-time">${escapeHTML(t)}</span>
+        <span class="trace-tag reason">~ reasoning${step}</span>
+        <pre class="trace-body">${escapeHTML(shown)}</pre>
+      </div>`;
+    } else if (e.type === 'codex_stderr') {
+      const stext = String(e.text || e.line || '');
+      const tooLong = stext.length > 800;
+      const shown = tooLong ? stext.slice(0, 800) + '\\n…[+' + (stext.length - 800) + ' chars]' : stext;
+      html += `<div class="trace-row">
+        <span class="trace-time">${escapeHTML(t)}</span>
+        <span class="trace-tag stderr">⚠ codex_stderr</span>
+        <pre class="trace-body code">${escapeHTML(shown)}</pre>
       </div>`;
     } else if (e.type === 'error' || (e.type && e.type.includes('error'))) {
       html += `<div class="trace-row">

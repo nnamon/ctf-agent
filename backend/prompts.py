@@ -149,6 +149,7 @@ def build_prompt(
 
     if distfile_names:
         lines.append("## Attached Files")
+        has_apk = False
         for name in distfile_names:
             ext = Path(name).suffix.lower()
             is_img = ext in IMAGE_EXTS
@@ -156,10 +157,25 @@ def build_prompt(
                 suffix = "  <- **IMAGE: call `view_image` immediately** (fix magic bytes first if corrupt)"
             elif is_img:
                 suffix = "  <- **IMAGE: use `exiftool`, `steghide`, `zsteg`, `strings` via bash**"
+            elif ext == ".apk":
+                suffix = "  <- **APK: see Android workflow below**"
+                has_apk = True
             else:
                 suffix = ""
             lines.append(f"- `/challenge/distfiles/{name}`{suffix}")
         lines.append("")
+        if has_apk:
+            lines += [
+                "### Android APK workflow",
+                "- `jadx -d /tmp/jadx <apk>` — decompile to Java (primary)",
+                "- `apktool d -f <apk> -o /tmp/apk` — manifest, resources, smali",
+                "- `aapt dump badging <apk>` / `aapt dump xmltree <apk> AndroidManifest.xml` — manifest summary",
+                "- `d2j-dex2jar <apk>` — DEX→JAR fallback when jadx fails",
+                "- Native libs: `lib/<arch>/*.so` → standard binutils + `qemu-<arch>-static`",
+                "- `androguard` (Python) for programmatic analysis: `from androguard.misc import AnalyzeAPK`",
+                "- Note: no Android emulator available. Reimplement check logic in Python.",
+                "",
+            ]
 
     # Orchestrator-supplied context (writeups, artifacts from prior siblings).
     # Each file is bind-mounted at /challenge/context/<basename>. Embed a

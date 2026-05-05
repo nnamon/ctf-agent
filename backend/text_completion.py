@@ -31,6 +31,7 @@ import json
 import logging
 from typing import Any
 
+from backend.codex_stderr import coalesce_stderr
 from backend.models import (
     model_id_from_spec,
     provider_from_spec,
@@ -143,13 +144,31 @@ async def _codex_completion(model: str, system: str, user: str, timeout_s: int) 
         "codex", "app-server",
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
     )
 
     pending: dict[int, asyncio.Future] = {}
     final_texts: list[str] = []
     turn_done = asyncio.Event()
     turn_error: dict[str, str] = {}
+
+    async def _stderr_loop() -> None:
+        """Drain codex stderr to logger so subprocess crashes are visible.
+
+        Without this, if the codex CLI panics on init (auth race, sessions
+        lock, etc.) we just see a silent timeout via wait_for(turn_done).
+        """
+        assert proc.stderr
+        try:
+            async for record in coalesce_stderr(proc.stderr):
+                text = record.decode("utf-8", errors="replace").rstrip()
+                if text:
+                    logger.warning("codex(text_completion %s) stderr: %s",
+                                   model, text[:800])
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("text_completion stderr reader crashed: %s", e)
 
     async def _read_loop() -> None:
         assert proc.stdout
@@ -179,11 +198,29 @@ async def _codex_completion(model: str, system: str, user: str, timeout_s: int) 
                 # Final-answer agent messages have phase != "commentary".
                 # The "commentary" ones are ephemeral status updates.
                 item = params.get("item", params)
-                if item.get("type") == "agentMessage":
+                item_type = item.get("type")
+                if item_type == "agentMessage":
                     text = item.get("text", "")
                     phase = item.get("phase")
                     if text and phase != "commentary":
                         final_texts.append(text)
+                elif item_type == "reasoning":
+                    # Surface chain-of-thought via logger so writeup-time
+                    # wedges (model thinking forever, never emitting an
+                    # agentMessage) are visible. Caps at 600 chars to keep
+                    # log volume bounded.
+                    rtext = item.get("text") or item.get("summary") or ""
+                    if not rtext:
+                        content = item.get("content")
+                        if isinstance(content, list):
+                            parts = []
+                            for c in content:
+                                if isinstance(c, dict):
+                                    parts.append(c.get("text") or c.get("summary") or "")
+                            rtext = "\n".join(p for p in parts if p)
+                    if rtext:
+                        logger.info("codex(text_completion %s) reasoning: %s",
+                                    model, rtext[:600])
             elif method == "turn/completed":
                 turn = params.get("turn", {})
                 if turn.get("status") == "failed":
@@ -194,6 +231,7 @@ async def _codex_completion(model: str, system: str, user: str, timeout_s: int) 
                 turn_done.set()
 
     reader = asyncio.create_task(_read_loop())
+    stderr_reader = asyncio.create_task(_stderr_loop())
 
     async def _rpc(method: str, params: dict | None = None) -> dict:
         assert proc.stdin
@@ -248,6 +286,7 @@ async def _codex_completion(model: str, system: str, user: str, timeout_s: int) 
             raise RuntimeError(f"Codex turn failed: {turn_error['err']}")
     finally:
         reader.cancel()
+        stderr_reader.cancel()
         try:
             proc.terminate()
             await asyncio.wait_for(proc.wait(), timeout=5)

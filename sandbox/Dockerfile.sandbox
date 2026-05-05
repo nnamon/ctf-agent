@@ -10,6 +10,9 @@ ENV TERM=xterm
 RUN apt-get update && apt-get install -y \
     # Networking
     netcat-openbsd curl wget nmap \
+    # SSH client + non-interactive password auth (pwnable.kr challenges
+    # all use `ssh user@pwnable.kr -p2222` with password `guest`)
+    openssh-client sshpass \
     # Binary analysis
     binutils file xxd bsdmainutils binwalk \
     gdb ltrace strace \
@@ -40,6 +43,12 @@ RUN apt-get update && apt-get install -y \
     sqlite3 \
     # Misc
     git jq zip unzip ca-certificates ncurses-term \
+    # DNS / whois recon (web/forensics challenges)
+    dnsutils whois \
+    # Cross-arch debugging (ARM/MIPS/PPC pwnables under qemu-user)
+    gdb-multiarch \
+    # PARI/GP (number-theory CLI, complements sage for some crypto)
+    pari-gp \
     # Math libs (required by flatter, cado-nfs, fpylll)
     libgmp-dev libmpfr-dev libfplll-dev libeigen3-dev \
     # z3 solver system lib
@@ -97,8 +106,8 @@ RUN git clone --depth=1 https://github.com/keeganryan/flatter /tmp/flatter \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.cargo/bin:/root/.local/bin:$PATH"
 
-# ── zsteg ─────────────────────────────────────────────────────────────────────
-RUN gem install zsteg
+# ── Ruby gems: zsteg (PNG/BMP steg) + seccomp-tools (syscall-filter dump) ───
+RUN gem install zsteg seccomp-tools
 
 # ── stegseek (build from source — pre-built .deb is amd64 only) ──────────────
 RUN apt-get update && apt-get install -y libmhash-dev libmcrypt-dev libjpeg-dev zlib1g-dev \
@@ -323,8 +332,22 @@ RUN echo "wireshark-common wireshark-common/install-setuid boolean false" \
         tshark tcpdump ngrep \
         # Disk + registry forensics (bulk_extractor not in jammy; use foremost/binwalk)
         chntpw \
-        # Android (jadx already installed earlier)
-        apktool \
+        # Android (jadx already installed earlier; apksigner+zipalign live in
+        # google-android-build-tools-installer / android-sdk-build-tools but
+        # apt's `aapt` is enough for manifest dumps without the full SDK)
+        apktool aapt \
+        # Web fingerprinting / scanning
+        whatweb nikto \
+        # SMB/AD recon (offensive — only used in authorized CTF contexts)
+        smbclient enum4linux \
+        # MQTT (IoT challenges)
+        mosquitto-clients \
+        # WebAssembly toolkit (wasm2wat / wat2wasm / wasm-decompile / wasm-objdump)
+        wabt \
+        # JPEG steganography (complements zsteg for PNG/BMP)
+        outguess \
+        # Protobuf compiler/decoder (binary blob inspection)
+        protobuf-compiler \
         # Password cracking + pocl (CPU OpenCL runtime so hashcat works headless)
         hashcat john \
         pocl-opencl-icd ocl-icd-libopencl1 \
@@ -352,11 +375,21 @@ RUN python3 -m pip install --no-cache-dir \
     pyjwt \
     clairvoyance \
     oletools \
-    bandit safety
+    bandit safety \
+    androguard \
+    hashid
 
 # Network + dynamic instrumentation.
 RUN python3 -m pip install --no-cache-dir \
     scapy mitmproxy frida-tools objection
+
+# AD/SMB + media + Android dynamic — split per-tool so transitive conflicts
+# don't tank the whole layer. Best-effort.
+RUN set +e; \
+    for pkg in impacket netexec drozer yt-dlp; do \
+      python3 -m pip install --no-cache-dir "$pkg" || echo "$pkg install failed (non-fatal)"; \
+    done; \
+    true
 
 # Symbolic execution complements. manticore/triton occasionally hit numpy
 # ABI issues on arm64 py3.10 — non-fatal so we can still ship the rest.
@@ -517,6 +550,7 @@ RUN set +e; \
     go install "$LD" github.com/tomnomnom/waybackurls@latest || echo "waybackurls install failed"; \
     go install "$LD" github.com/securego/gosec/v2/cmd/gosec@latest || echo "gosec install failed"; \
     go install "$LD" github.com/zricethezav/gitleaks/v8@latest || echo "gitleaks install failed"; \
+    go install "$LD" github.com/ropnop/kerbrute@latest || echo "kerbrute install failed"; \
     true
 
 # ── Rust toolchain + cargo-installed tools ──────────────────────────────────

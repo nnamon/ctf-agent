@@ -436,34 +436,42 @@ class ChallengeSwarm:
                 if agent_name in self.cost_tracker.by_agent:
                     cost_usd = self.cost_tracker.by_agent[agent_name].cost_usd
 
-            # Liveness: trace mtime gives ANY event activity (incl.
-            # operator/coordinator bumps that don't reflect solver
-            # progress). step_count is the more reliable signal — it
-            # only advances when the model emits a tool_call, which
-            # only happens when the model's turn actually completes.
+            # Liveness signals:
+            #   idle_seconds       — trace mtime; ANY event resets this
+            #                        (incl. coord bumps that don't reflect
+            #                        solver progress)
+            #   tool_call_idle_s   — seconds since last tool_call. Only
+            #                        the model emitting a tool advances
+            #                        this. Wedges where the model thinks
+            #                        forever post-startup show up here
+            #                        even when step_count > 0.
             idle_seconds = None
+            tool_call_idle_s: float | None = None
             stuck = False
             tracer = getattr(solver, "tracer", None) if solver else None
             trace_path = getattr(tracer, "path", None) if tracer else None
             if trace_path and os.path.exists(trace_path):
                 idle_seconds = round(now - os.path.getmtime(trace_path), 1)
+            last_call = getattr(solver, "_last_tool_call_at", None) if solver else None
+            if last_call is not None:
+                tool_call_idle_s = round(now - last_call, 1)
 
             swarm_age = (now - self.started_at) if self.started_at else 0
-            # Two distinct stuck patterns we can detect:
-            #   (a) step_count == 0 after the swarm has been alive >60s
-            #       → model never advanced past the initial codex turn
-            #       (e.g. transport hung mid-thread/start, or model
-            #       reasoned without producing a tool call)
-            #   (b) step_count > 0 but unchanged for >180s while not
-            #       confirmed → model wedged in a tight reasoning loop
-            #       without producing tool calls. Detection requires
-            #       cross-tick comparison (we don't have that here yet),
-            #       so for now (b) is approximated by mtime > 180s.
+            # Three distinct stuck patterns we can detect:
+            #   (a) step_count == 0 after >60s         → never advanced
+            #       past the initial codex turn (transport hang or
+            #       model reasoning without producing any tool call)
+            #   (b) step_count > 0 but no tool_call    → model wedged in
+            #       in >180s and not confirmed             a reasoning loop after some progress.
+            #   (c) trace mtime stale >180s            → no events at all
+            #       (catches non-tool-call wedges, e.g. transport dead)
             stuck = (
                 not self.cancel_event.is_set()
                 and not confirmed
                 and (
                     (swarm_age > 60 and step_count == 0)
+                    or (step_count > 0 and tool_call_idle_s is not None
+                        and tool_call_idle_s > 180)
                     or (idle_seconds is not None and idle_seconds > 180)
                 )
             )
@@ -479,6 +487,7 @@ class ChallengeSwarm:
                 "cost_usd": round(cost_usd, 4),
                 "confirmed": confirmed,
                 "idle_seconds": idle_seconds,
+                "tool_call_idle_s": tool_call_idle_s,
                 "suspected_stuck": stuck,
             }
 
