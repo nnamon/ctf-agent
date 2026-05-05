@@ -414,18 +414,23 @@ class PwnableKrBackend(Backend):
         verdict = (alert_m.group(1) if alert_m else body[:200]).strip()
         verdict_low = verdict.lower()
 
-        # Heuristics — refine once we've observed a real correct/wrong
-        # submission. pwnable.kr's verdict strings have historically been:
-        #   - "Auth code OK!" / "OK!" / "you got it!" → correct
-        #   - "wrong" / "incorrect" / "Wrong auth code" → incorrect
-        #   - "already authenticated" → already_solved
-        #   - "no such task" / similar → unknown / transport
+        # Verdict heuristics — calibrated against real responses observed
+        # in the wild on agentamon's account:
+        #   correct       → "Congratz!. you got <N> points"
+        #   already_solved → "You already authenticated this flag"
+        #                  → "already authenticated" / "duplicat" (older variants)
+        #   incorrect     → "wrong" / "incorrect" / "Wrong auth code"
+        #   transport     → "no such task" (server-side issue)
         if any(s in verdict_low for s in ("already auth", "duplicat")):
             return SubmitResult(
                 "already_solved", verdict,
                 f"ALREADY SOLVED: {verdict}",
             )
-        if any(s in verdict_low for s in ("ok", "got it", "correct", "success")):
+        if (
+            "congratz" in verdict_low
+            or re.search(r"got\s+\d+\s*points?", verdict_low)
+            or any(s in verdict_low for s in ("ok!", "got it", "correct", "success"))
+        ):
             return SubmitResult(
                 "correct", verdict,
                 f"CORRECT — pwnable.kr accepted: {verdict}",
