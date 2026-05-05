@@ -321,10 +321,16 @@ class ChallengeSwarm:
     async def run(self) -> SolverResult | None:
         """Run all solvers in parallel. Returns the winner's result or None."""
         self.started_at = time.time()
-        tasks = [
+        # Stash the per-solver tasks on the swarm so kill() can cancel
+        # them later — without this, kill() only flips cancel_event and
+        # the solvers' codex-MCP loops keep ticking until they
+        # voluntarily check the event (which they typically don't until
+        # the next tool-call boundary, sometimes minutes apart).
+        self._solver_tasks = [
             asyncio.create_task(self._run_solver(spec), name=f"solver-{spec}")
             for spec in self.model_specs
         ]
+        tasks = list(self._solver_tasks)
 
         try:
             while tasks:
@@ -357,8 +363,18 @@ class ChallengeSwarm:
             self.finished_at = time.time()
 
     def kill(self) -> None:
-        """Cancel all agents for this challenge."""
+        """Cancel all agents for this challenge.
+
+        Sets cancel_event AND directly cancels the per-solver asyncio
+        tasks. Setting the event alone leaves the codex-MCP loops
+        running (they only check the event between tool-call boundaries,
+        which can be minutes apart on a long reasoning turn). The
+        explicit task.cancel() raises CancelledError into the coroutine
+        immediately, freeing the swarm slot for the next spawn."""
         self.cancel_event.set()
+        for t in getattr(self, "_solver_tasks", []):
+            if not t.done():
+                t.cancel()
 
     def get_status(self) -> dict:
         """Get per-agent progress and findings."""
