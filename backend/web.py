@@ -847,14 +847,39 @@ pre.log {
   form { flex-direction: column; align-items: stretch; }
   form button { width: 100%; }
 
-  /* Solvers table: tighter padding, allow actions to wrap */
-  .solvers th, .solvers td { padding: 8px 10px; font-size: 12px; }
+  /* Solvers table on mobile: when a flag is shown, the long mono flag
+     string would otherwise blow out the row width and push the Log
+     button off the right edge of the viewport. Fix in two parts:
+       (a) constrain the table so it can't exceed its column track —
+           the parent .detail panel sits in a min-width:0 grid item, so
+           setting table-layout:fixed + width:100% forces cells to
+           respect the available width.
+       (b) let the flag cell wrap mid-token (long_flag_with_underscores
+           still has to break somewhere) so the row height grows
+           instead of the row width.
+     The Log button itself is left-aligned and wraps onto its own line
+     when the row is tall enough. */
+  .solvers { table-layout: fixed; width: 100%; }
+  .solvers th, .solvers td {
+    padding: 8px 10px; font-size: 12px;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+  .solvers td:nth-child(4) {
+    /* Flag column: force unbreakable mono runs to wrap. */
+    word-break: break-all;
+    overflow-wrap: anywhere;
+  }
   .solvers td.actions {
     text-align: left;
     padding: 6px 10px;
     white-space: normal;
   }
-  .solvers td.actions button { margin: 2px 4px 2px 0; }
+  .solvers td.actions button {
+    margin: 2px 4px 2px 0;
+    width: 100%;       /* full-width Log button — easier tap target */
+    max-width: 120px;
+  }
 
   /* Code/log surfaces */
   pre.log { font-size: 11px; max-height: 240px; padding: 10px; line-height: 1.55; }
