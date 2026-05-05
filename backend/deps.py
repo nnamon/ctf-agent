@@ -69,6 +69,14 @@ class CoordinatorDeps:
     operator_inbox: asyncio.Queue = field(default_factory=asyncio.Queue)
     swarms: dict[str, Any] = field(default_factory=dict)
     swarm_tasks: dict[str, asyncio.Task] = field(default_factory=dict)
+    # Atomicity guard for `do_spawn_swarm`. The Codex coordinator can
+    # dispatch many parallel `spawn_swarm` tool calls in a single turn —
+    # without serialisation, all of them race past the
+    # max_concurrent_challenges check (which reads + decides without a
+    # lock) and ALL get registered, leading to dozens of solver
+    # containers starting at once and overwhelming the codex MCP
+    # transport. The lock makes spawn admission strictly serial.
+    spawn_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     results: dict[str, dict] = field(default_factory=dict)
     challenge_dirs: dict[str, str] = field(default_factory=dict)
     # Web dashboard EventHub — populated by coordinator_loop.run_event_loop

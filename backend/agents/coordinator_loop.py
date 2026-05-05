@@ -155,7 +155,13 @@ async def run_event_loop(
         f"CTF is LIVE. {len(poller.known_challenges)} challenges, "
         f"{len(poller.known_solved)} solved.\n"
         f"Unsolved: {sorted(unsolved) if unsolved else 'NONE'}\n"
-        "Fetch challenges and spawn swarms for all unsolved."
+        f"Spawn capacity: {deps.max_concurrent_challenges} concurrent "
+        f"swarms max. Spawn at most that many at once — `spawn_swarm` "
+        f"returns 'At capacity' once the cap is hit, so issuing more "
+        f"parallel calls per turn just wastes them. As swarms finish "
+        f"(`SOLVER FINISHED:` events) you'll get more capacity.\n"
+        f"Fetch challenges and spawn swarms for the highest-priority "
+        f"unsolved (start with the lowest-point / easiest)."
     )
 
     try:

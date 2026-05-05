@@ -93,27 +93,38 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
             "pattern. Pick a different challenge."
         )
 
-    # Retire finished swarm_tasks (free their resources), but keep the
-    # ChallengeSwarm objects in deps.swarms so the dashboard can still
-    # display the solver list, flags, log paths, and writeup link for
-    # completed challenges. The capacity check below counts only swarms
-    # whose cancel_event is unset (i.e. still actively solving).
-    for name, task in list(deps.swarm_tasks.items()):
-        if task.done():
-            deps.swarm_tasks.pop(name, None)
+    # Atomic capacity admission. The Codex coordinator routinely
+    # dispatches a flood of parallel spawn_swarm tool calls in one turn
+    # ("spawn for all 30 unsolved at once") — without this lock the
+    # active_count read races and every concurrent caller passes the
+    # max_concurrent check at the initial value of 0, so all 30 swarms
+    # register, 60+ solver threads start, and the codex MCP transport
+    # collapses with "Connection lost". With the lock, admission is
+    # strictly serial: the first N calls past the cap return "At
+    # capacity" and the LLM either retries on the next turn or moves on.
+    async with deps.spawn_lock:
+        # Retire finished swarm_tasks (free their resources), but keep
+        # the ChallengeSwarm objects in deps.swarms so the dashboard
+        # can still display the solver list, flags, log paths, and
+        # writeup link for completed challenges. The capacity check
+        # below counts only swarms whose cancel_event is unset (i.e.
+        # still actively solving).
+        for name, task in list(deps.swarm_tasks.items()):
+            if task.done():
+                deps.swarm_tasks.pop(name, None)
 
-    active_count = sum(
-        1 for s in deps.swarms.values() if not s.cancel_event.is_set()
-    )
-    if active_count >= deps.max_concurrent_challenges:
-        return (
-            f"At capacity ({active_count}/{deps.max_concurrent_challenges} "
-            f"challenges running). Wait for one to finish."
+        active_count = sum(
+            1 for s in deps.swarms.values() if not s.cancel_event.is_set()
         )
+        if active_count >= deps.max_concurrent_challenges:
+            return (
+                f"At capacity ({active_count}/{deps.max_concurrent_challenges} "
+                f"challenges running). Wait for one to finish."
+            )
 
-    if challenge_name in deps.swarms and \
-            not deps.swarms[challenge_name].cancel_event.is_set():
-        return f"Swarm still running for {challenge_name}"
+        if challenge_name in deps.swarms and \
+                not deps.swarms[challenge_name].cancel_event.is_set():
+            return f"Swarm still running for {challenge_name}"
 
     # Per-session quota check. Block new spawns when the full session-
     # to-date cost (carryover from prior runs + this run's live cost,
@@ -137,71 +148,75 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
                 f"start a new session to continue."
             )
 
-    # Auto-pull challenge if needed
-    if challenge_name not in deps.challenge_dirs:
-        challenges = await deps.ctfd.fetch_all_challenges()
-        ch_data = next((c for c in challenges if c.get("name") == challenge_name), None)
-        if not ch_data:
-            return f"Challenge '{challenge_name}' not found on CTFd"
-        output_dir = str(Path(deps.challenges_root))
-        ch_dir = await deps.ctfd.pull_challenge(ch_data, output_dir)
-        deps.challenge_dirs[challenge_name] = ch_dir
-        deps.challenge_metas[challenge_name] = ChallengeMeta.from_yaml(Path(ch_dir) / "metadata.yml")
+        # Stay inside the spawn_lock through swarm creation + registration.
+        # The auto-pull is only slow on a cold cache (and fetch_all_challenges
+        # populates challenge_dirs for every slug in one go, so subsequent
+        # spawns hit the warm path); steady-state, the lock is held for a
+        # few hundred ms, which is fine for serialising tool-call admission.
+        if challenge_name not in deps.challenge_dirs:
+            challenges = await deps.ctfd.fetch_all_challenges()
+            ch_data = next((c for c in challenges if c.get("name") == challenge_name), None)
+            if not ch_data:
+                return f"Challenge '{challenge_name}' not found on CTFd"
+            output_dir = str(Path(deps.challenges_root))
+            ch_dir = await deps.ctfd.pull_challenge(ch_data, output_dir)
+            deps.challenge_dirs[challenge_name] = ch_dir
+            deps.challenge_metas[challenge_name] = ChallengeMeta.from_yaml(Path(ch_dir) / "metadata.yml")
 
-    from backend.agents.swarm import ChallengeSwarm
+        from backend.agents.swarm import ChallengeSwarm
 
-    # Bind any per-challenge env settings to the shared registry. For
-    # pwn.college this means telling the workspace env which (dojo,
-    # module, challenge) to spawn on first SSH access. The registry +
-    # envs themselves are owned by the coordinator and persist across
-    # challenges; we just nudge the active challenge here so the next
-    # tool call from the solver lands in the right container.
-    meta = deps.challenge_metas[challenge_name]
-    if deps.env_registry is not None:
-        _bind_challenge_to_envs(deps.env_registry, meta)
+        # Bind any per-challenge env settings to the shared registry. For
+        # pwn.college this means telling the workspace env which (dojo,
+        # module, challenge) to spawn on first SSH access. The registry +
+        # envs themselves are owned by the coordinator and persist across
+        # challenges; we just nudge the active challenge here so the next
+        # tool call from the solver lands in the right container.
+        meta = deps.challenge_metas[challenge_name]
+        if deps.env_registry is not None:
+            _bind_challenge_to_envs(deps.env_registry, meta)
 
-    swarm = ChallengeSwarm(
-        challenge_dir=deps.challenge_dirs[challenge_name],
-        meta=meta,
-        ctfd=deps.ctfd,
-        cost_tracker=deps.cost_tracker,
-        settings=deps.settings,
-        model_specs=deps.model_specs,
-        no_submit=deps.no_submit,
-        coordinator_inbox=deps.coordinator_inbox,
-        env_registry=deps.env_registry,
-    )
-    deps.swarms[challenge_name] = swarm
-
-    async def _run_and_cleanup() -> None:
-        t0 = time.monotonic()
-        result = await swarm.run()
-        duration_s = time.monotonic() - t0
-        # Flag already submitted/confirmed by solver's submit_fn — just record the result
-        if result and result.status == FLAG_FOUND:
-            deps.results[challenge_name] = {
-                "flag": result.flag,
-                "submit": "DRY RUN" if deps.no_submit else "confirmed by solver",
-            }
-            if deps.event_hub:
-                # Truncated so a long flag doesn't blow up the event panel.
-                flag_short = (result.flag or "")[:60]
-                deps.event_hub.broadcast(
-                    "flag_found", challenge=challenge_name,
-                    model=swarm.winner_spec or "?",
-                    text=f"{challenge_name}: {flag_short}",
-                )
-            if not deps.no_writeup:
-                await _generate_writeup_for_swarm(swarm, result, deps, duration_s)
-
-    task = asyncio.create_task(_run_and_cleanup(), name=f"swarm-{challenge_name}")
-    deps.swarm_tasks[challenge_name] = task
-    if deps.event_hub:
-        deps.event_hub.broadcast(
-            "swarm_spawned", challenge=challenge_name,
-            text=f"spawned {challenge_name} ({len(deps.model_specs)} models)",
+        swarm = ChallengeSwarm(
+            challenge_dir=deps.challenge_dirs[challenge_name],
+            meta=meta,
+            ctfd=deps.ctfd,
+            cost_tracker=deps.cost_tracker,
+            settings=deps.settings,
+            model_specs=deps.model_specs,
+            no_submit=deps.no_submit,
+            coordinator_inbox=deps.coordinator_inbox,
+            env_registry=deps.env_registry,
         )
-    return f"Swarm spawned for {challenge_name} with {len(deps.model_specs)} models"
+        deps.swarms[challenge_name] = swarm
+
+        async def _run_and_cleanup() -> None:
+            t0 = time.monotonic()
+            result = await swarm.run()
+            duration_s = time.monotonic() - t0
+            # Flag already submitted/confirmed by solver's submit_fn — just record the result
+            if result and result.status == FLAG_FOUND:
+                deps.results[challenge_name] = {
+                    "flag": result.flag,
+                    "submit": "DRY RUN" if deps.no_submit else "confirmed by solver",
+                }
+                if deps.event_hub:
+                    # Truncated so a long flag doesn't blow up the event panel.
+                    flag_short = (result.flag or "")[:60]
+                    deps.event_hub.broadcast(
+                        "flag_found", challenge=challenge_name,
+                        model=swarm.winner_spec or "?",
+                        text=f"{challenge_name}: {flag_short}",
+                    )
+                if not deps.no_writeup:
+                    await _generate_writeup_for_swarm(swarm, result, deps, duration_s)
+
+        task = asyncio.create_task(_run_and_cleanup(), name=f"swarm-{challenge_name}")
+        deps.swarm_tasks[challenge_name] = task
+        if deps.event_hub:
+            deps.event_hub.broadcast(
+                "swarm_spawned", challenge=challenge_name,
+                text=f"spawned {challenge_name} ({len(deps.model_specs)} models)",
+            )
+        return f"Swarm spawned for {challenge_name} with {len(deps.model_specs)} models"
 
 
 async def do_check_swarm_status(deps: CoordinatorDeps, challenge_name: str) -> str:
