@@ -134,6 +134,40 @@ async def _claude_sdk_completion(model: str, system: str, user: str, timeout_s: 
 
 
 async def _codex_completion(model: str, system: str, user: str, timeout_s: int) -> str:
+    """Spawn codex app-server with one retry on transient subprocess deaths.
+
+    Wraps `_codex_attempt` so a single ConnectionResetError / BrokenPipeError
+    (codex pipe collapsed mid-RPC) or a silent EOF (subprocess died before
+    producing an agentMessage) doesn't lose the writeup. Mirrors the 3-
+    attempt resilience the solver path has had since v0.1. Non-pipe
+    failures (TimeoutError, "Codex turn failed", RPC errors) propagate
+    immediately — retrying a true model-side failure is a waste.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            text = await _codex_attempt(model, system, user, timeout_s)
+            if text:
+                return text
+            logger.warning(
+                "codex completion empty (model=%s, attempt=%d/2); %s",
+                model, attempt + 1,
+                "retrying" if attempt == 0 else "giving up",
+            )
+        except (ConnectionResetError, BrokenPipeError) as e:
+            last_exc = e
+            logger.warning(
+                "codex completion %s (model=%s, attempt=%d/2)",
+                type(e).__name__, model, attempt + 1,
+            )
+        if attempt < 1:
+            await asyncio.sleep(5)
+    if last_exc:
+        raise last_exc
+    return ""
+
+
+async def _codex_attempt(model: str, system: str, user: str, timeout_s: int) -> str:
     """Spawn `codex app-server`, run one turn, capture the agent message.
 
     Mirrors the protocol used by `backend.agents.codex_solver` but with

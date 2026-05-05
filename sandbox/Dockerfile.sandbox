@@ -585,9 +585,8 @@ RUN set +e; \
     go install "$LD" github.com/securego/gosec/v2/cmd/gosec@latest || echo "gosec install failed"; \
     go install "$LD" github.com/zricethezav/gitleaks/v8@latest || echo "gitleaks install failed"; \
     go install "$LD" github.com/ropnop/kerbrute@latest || echo "kerbrute install failed"; \
-    go install "$LD" github.com/jpillora/chisel@latest \
-       && [ -x /root/go/bin/chisel ] && ln -sf /root/go/bin/chisel /usr/local/bin/chisel-pivot \
-       || echo "chisel install failed"; \
+    go install "$LD" github.com/jpillora/chisel@latest || echo "chisel install failed"; \
+    [ -x /root/go/bin/chisel ] && ln -sf /root/go/bin/chisel /usr/local/bin/chisel-pivot || true; \
     go install "$LD" github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest || echo "subfinder install failed"; \
     go install "$LD" github.com/projectdiscovery/httpx/cmd/httpx@latest || echo "httpx install failed"; \
     go install "$LD" github.com/BishopFox/cloudfox@latest || echo "cloudfox install failed"; \

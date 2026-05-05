@@ -791,10 +791,13 @@ class CodexSolver:
         except asyncio.CancelledError:
             return self._result(CANCELLED)
         except Exception as e:
-            error_str = str(e)
-            logger.error(f"[{self.agent_name}] Error: {e}", exc_info=True)
-            self._findings = f"Error: {e}"
-            self.tracer.event("error", error=error_str)
+            # Some asyncio errors (ConnectionResetError, BrokenPipeError when
+            # the codex subprocess dies mid-RPC) carry an empty str(e); fall
+            # back to the type name so traces and dashboards aren't blank.
+            error_str = str(e) or type(e).__name__
+            logger.error(f"[{self.agent_name}] Error: {error_str}", exc_info=True)
+            self._findings = f"Error: {error_str}"
+            self.tracer.event("error", error=error_str, error_type=type(e).__name__)
             if "quota" in error_str.lower() or "rate" in error_str.lower():
                 return self._result(QUOTA_ERROR)
             return self._result(ERROR)
