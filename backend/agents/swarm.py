@@ -430,22 +430,37 @@ class ChallengeSwarm:
                 if agent_name in self.cost_tracker.by_agent:
                     cost_usd = self.cost_tracker.by_agent[agent_name].cost_usd
 
-            # Liveness: trace mtime tells us when the solver last
-            # emitted ANY event. >120s with no event while not
-            # cancelled = strong "stuck" signal.
+            # Liveness: trace mtime gives ANY event activity (incl.
+            # operator/coordinator bumps that don't reflect solver
+            # progress). step_count is the more reliable signal — it
+            # only advances when the model emits a tool_call, which
+            # only happens when the model's turn actually completes.
             idle_seconds = None
             stuck = False
             tracer = getattr(solver, "tracer", None) if solver else None
             trace_path = getattr(tracer, "path", None) if tracer else None
             if trace_path and os.path.exists(trace_path):
                 idle_seconds = round(now - os.path.getmtime(trace_path), 1)
-                # Threshold: 2 min of silence on a non-cancelled solver
-                # is almost always a hung codex transport.
-                stuck = (
-                    idle_seconds > 120
-                    and not self.cancel_event.is_set()
-                    and not confirmed
+
+            swarm_age = (now - self.started_at) if self.started_at else 0
+            # Two distinct stuck patterns we can detect:
+            #   (a) step_count == 0 after the swarm has been alive >60s
+            #       → model never advanced past the initial codex turn
+            #       (e.g. transport hung mid-thread/start, or model
+            #       reasoned without producing a tool call)
+            #   (b) step_count > 0 but unchanged for >180s while not
+            #       confirmed → model wedged in a tight reasoning loop
+            #       without producing tool calls. Detection requires
+            #       cross-tick comparison (we don't have that here yet),
+            #       so for now (b) is approximated by mtime > 180s.
+            stuck = (
+                not self.cancel_event.is_set()
+                and not confirmed
+                and (
+                    (swarm_age > 60 and step_count == 0)
+                    or (idle_seconds is not None and idle_seconds > 180)
                 )
+            )
 
             status = (
                 "running" if spec in self.solvers and not self.cancel_event.is_set()

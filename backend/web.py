@@ -2554,6 +2554,32 @@ async def _kill_swarm(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def _kill_solver(request: web.Request) -> web.Response:
+    """Cancel one solver in a swarm; siblings continue."""
+    chal = request.match_info["chal"]
+    model = request.match_info["model"]
+    deps = request.app["deps"]
+    hub: EventHub = request.app["hub"]
+    swarm = deps.swarms.get(chal)
+    if not swarm:
+        return web.json_response({"error": f"no swarm for {chal!r}"}, status=404)
+    if model not in swarm.model_specs:
+        return web.json_response(
+            {"error": f"no solver {model!r} in {chal} (have: {swarm.model_specs})"},
+            status=404,
+        )
+    cancelled = swarm.kill_solver(model)
+    if not cancelled:
+        return web.json_response(
+            {"ok": False, "reason": "solver was already done"}
+        )
+    hub.broadcast(
+        "solver_killed", challenge=chal, model=model,
+        text=f"killed {chal}/{model} via dashboard",
+    )
+    return web.json_response({"ok": True})
+
+
 async def _spawn(request: web.Request) -> web.Response:
     deps = request.app["deps"]
     hub: EventHub = request.app["hub"]
@@ -2586,6 +2612,7 @@ def build_app(deps: Any, run_id: str) -> web.Application:
     app.router.add_get("/api/writeups", _writeups_list)
     app.router.add_post("/api/msg", _msg)
     app.router.add_post("/api/swarms/{chal}/kill", _kill_swarm)
+    app.router.add_post("/api/swarms/{chal}/solvers/{model}/kill", _kill_solver)
     app.router.add_post("/api/spawn", _spawn)
     # Back-compat: the old hand-rolled server exposed /msg directly.
     app.router.add_post("/msg", _msg)
