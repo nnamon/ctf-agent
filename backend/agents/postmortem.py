@@ -406,13 +406,60 @@ async def generate_writeup(
             duration_s=duration_s,
         )
 
-        markdown = await text_completion(
-            model_spec=model,
-            system=SYSTEM_PROMPT,
-            user=user_prompt,
-            settings=settings,
-            timeout_s=900,
-        )
+        # Generate via the requested model; on certain transient failures
+        # (claude-agent-sdk's bundled CLI SIGSEGVs, AUP refusals on
+        # claude-opus-4-7) fall back to a known-stable codex model so the
+        # writeup pipeline doesn't silently drop the post-mortem.
+        FALLBACK_MODEL = "codex/gpt-5.5"
+        try:
+            markdown = await text_completion(
+                model_spec=model,
+                system=SYSTEM_PROMPT,
+                user=user_prompt,
+                settings=settings,
+                timeout_s=900,
+            )
+        except Exception as e:
+            err = str(e)
+            transient = (
+                "Cannot write to terminated process" in err
+                or "exit code: -11" in err
+                or "exit code: -6" in err
+                or "violate our Usage Policy" in err
+            )
+            if transient and model != FALLBACK_MODEL:
+                logger.warning(
+                    "Postmortem %s failed with transient error (%s); "
+                    "retrying with %s",
+                    meta.name, err[:120], FALLBACK_MODEL,
+                )
+                markdown = await text_completion(
+                    model_spec=FALLBACK_MODEL,
+                    system=SYSTEM_PROMPT,
+                    user=user_prompt,
+                    settings=settings,
+                    timeout_s=900,
+                )
+            else:
+                raise
+
+        # Sometimes Claude SDK returns the AUP-refusal text as a normal
+        # string instead of raising — detect and retry.
+        if markdown and (
+            "violate our Usage Policy" in markdown[:500]
+            or "API Error: Claude Code is unable to respond" in markdown[:500]
+        ) and model != FALLBACK_MODEL:
+            logger.warning(
+                "Postmortem %s came back as AUP refusal; retrying with %s",
+                meta.name, FALLBACK_MODEL,
+            )
+            markdown = await text_completion(
+                model_spec=FALLBACK_MODEL,
+                system=SYSTEM_PROMPT,
+                user=user_prompt,
+                settings=settings,
+                timeout_s=900,
+            )
 
         if not markdown:
             logger.warning("Postmortem returned empty body for %s", meta.name)

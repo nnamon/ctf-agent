@@ -237,7 +237,13 @@ class ChallengeSwarm:
                 with contextlib.suppress(Exception):
                     await solver.stop()
                 if attempt < 2:
-                    await asyncio.sleep(2 ** attempt * 5)  # 5s, 10s
+                    # Codex app-server outages observed today have run
+                    # 3-5 minutes per window. Old 5s/10s backoff was
+                    # nowhere near enough — every spawn during the
+                    # outage burned all 3 retries in 15s and gave up.
+                    # 60s/180s gives the backend room to recover before
+                    # the second + third attempts.
+                    await asyncio.sleep([60, 180][attempt])
                 continue
             except Exception as e:
                 logger.error(f"[{self.meta.name}/{model_spec}] Fatal: {e}", exc_info=True)
