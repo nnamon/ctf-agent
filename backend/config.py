@@ -88,6 +88,14 @@ class Settings(BaseSettings):
     # depend on prior workspace artifacts.
     pwncollege_reset_home_on_switch: bool = True
 
+    # ── pwnable.kr backend params ──
+    # Optional pre-supplied numeric account id. When unset, the backend
+    # discovers it lazily from rank.php?id=<username>. Setting it
+    # explicitly skips the rank-page round-trip and works around the
+    # case where the user is too low-ranked to appear on the focused
+    # rank page (rare).
+    pwnablekr_user_id: str = ""
+
     # ── Multi-env registry ──
     # Comma-separated env names to register beyond `local` (which is
     # always present). Recognised values: "pwncollege". Auto-set to

@@ -45,6 +45,7 @@ def build_deps(
         attempt_log_path=getattr(settings, "attempt_log_path", None),
         manual_confirm=getattr(settings, "manual_confirm", False),
         pwncollege_dojos=getattr(settings, "pwncollege_dojos", []) or [],
+        pwnablekr_user_id=getattr(settings, "pwnablekr_user_id", ""),
     )
     cost_tracker = CostTracker.for_session(settings)
     specs = model_specs or list(DEFAULT_MODELS)

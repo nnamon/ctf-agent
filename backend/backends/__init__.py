@@ -18,6 +18,7 @@ from backend.backends.base import Attempt, Backend, SubmitResult
 from backend.backends.ctfd import CTFdBackend, CTFdSessionBackend
 from backend.backends.local import LocalBackend
 from backend.backends.manual_confirm import ManualConfirmBackend
+from backend.backends.pwnablekr import PwnableKrBackend
 from backend.backends.pwnabletw import PwnableTwBackend
 from backend.backends.pwncollege import PwnCollegeBackend
 
@@ -34,6 +35,7 @@ def make_backend(
     attempt_log_path: str | Path | None = None,
     manual_confirm: bool = False,
     pwncollege_dojos: list[str] | None = None,
+    pwnablekr_user_id: str = "",
 ) -> Backend:
     """Construct a backend by kind, optionally wrapped with decorators.
 
@@ -86,6 +88,13 @@ def make_backend(
             username=username,
             password=password,
         )
+    elif kind in ("pwnablekr", "pwnable.kr", "pwnkr"):
+        inner = PwnableKrBackend(
+            base_url=base_url or "https://pwnable.kr",
+            username=username,
+            password=password,
+            user_id=pwnablekr_user_id or "",
+        )
     elif kind in ("pwncollege", "pwn.college", "dojo"):
         inner = PwnCollegeBackend(
             base_url=base_url or "https://pwn.college",
@@ -111,7 +120,7 @@ def make_backend(
 __all__ = [
     "Attempt", "Backend", "SubmitResult",
     "CTFdBackend", "CTFdSessionBackend", "LocalBackend",
-    "PwnCollegeBackend", "PwnableTwBackend",
+    "PwnCollegeBackend", "PwnableKrBackend", "PwnableTwBackend",
     "AttemptLogBackend", "ManualConfirmBackend",
     "make_backend",
 ]
