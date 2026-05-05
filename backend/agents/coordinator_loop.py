@@ -46,7 +46,7 @@ def build_deps(
         manual_confirm=getattr(settings, "manual_confirm", False),
         pwncollege_dojos=getattr(settings, "pwncollege_dojos", []) or [],
     )
-    cost_tracker = CostTracker()
+    cost_tracker = CostTracker.for_session(settings)
     specs = model_specs or list(DEFAULT_MODELS)
     Path(challenges_root).mkdir(parents=True, exist_ok=True)
 
@@ -231,6 +231,18 @@ async def run_event_loop(
             now = asyncio.get_event_loop().time()
             if now - last_status >= status_interval:
                 last_status = now
+                # Persist any cost accrued since the previous tick. Lets
+                # a coordinator restart resume with an accurate session
+                # total instead of forgetting the in-flight bill.
+                try:
+                    from backend.sandbox import RUN_ID
+                    cost_tracker.flush_to_log(
+                        db_path=getattr(deps.settings, "usage_log_path", None),
+                        run_id=RUN_ID,
+                        session_name=getattr(deps.settings, "session_name", "default"),
+                    )
+                except Exception as e:
+                    logger.warning("usage_log periodic flush failed: %s", e)
                 from backend.agents.coordinator_core import _is_skipped
                 active = [n for n, t in deps.swarm_tasks.items() if not t.done()]
                 solved_set = poller.known_solved

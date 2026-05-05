@@ -25,6 +25,7 @@ with auth in front.
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import json
 import logging
@@ -152,6 +153,21 @@ body {
   animation: pulse 2s infinite;
 }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
+
+.app-bar a.hdr-link {
+  color: var(--md-sys-color-primary);
+  text-decoration: none;
+  font-size: 13px; font-weight: 500;
+  letter-spacing: 0.007em;
+  padding: 6px 12px;
+  border-radius: var(--md-shape-xl);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  transition: background-color .15s, border-color .15s;
+}
+.app-bar a.hdr-link:hover {
+  background: rgba(208, 188, 255, .08);
+  border-color: var(--md-sys-color-outline);
+}
 
 .kv { display: flex; gap: 6px; align-items: baseline; }
 .kv .k {
@@ -873,6 +889,7 @@ pre.log {
 <body>
 <header class="app-bar">
   <div class="brand"><span class="dot"></span>ctf-agent</div>
+  <a class="hdr-link" href="/writeups">writeups →</a>
   <div class="kv"><span class="k">session</span>
     <span class="v" id="hdr-session">—</span></div>
   <div class="kv"><span class="k">run</span>
@@ -941,6 +958,15 @@ const boardEl = document.getElementById('board');
 const detailHostEl = document.getElementById('detail-host');
 
 const fmtUsd = n => '$' + (n || 0).toFixed(2);
+function fmtDuration(s) {
+  if (s == null || s < 0) return '';
+  s = Math.round(s);
+  if (s < 60)   return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60).toString().padStart(2,'0') + 's';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h + 'h ' + m.toString().padStart(2,'0') + 'm';
+}
 const escapeHTML = s => String(s).replace(/[&<>"']/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
@@ -1011,8 +1037,9 @@ function renderHeader(s) {
       // Show the last path segment as the chip label; full name on hover.
       const slug = c.challenge.split('/').pop();
       const cost = c.cost_usd ? ` · ${fmtUsd(c.cost_usd)}` : '';
+      const dur = c.duration_s ? ` · ${fmtDuration(c.duration_s)}` : '';
       return `<span class="active-chip" data-name="${escapeHTML(c.challenge)}"
-                title="${escapeHTML(c.challenge)}">${escapeHTML(slug)}${escapeHTML(cost)}</span>`;
+                title="${escapeHTML(c.challenge)}">${escapeHTML(slug)}${escapeHTML(cost)}${escapeHTML(dur)}</span>`;
     }).join('');
     // Wire click → opens the tile's detail panel and scrolls to it.
     for (const el of activeBox.querySelectorAll('.active-chip')) {
@@ -1200,6 +1227,12 @@ function renderDetail(challenges) {
         detailCells.headerCost.textContent = newCost;
       }
     }
+    if (detailCells.headerDuration) {
+      const newDur = c.duration_s ? fmtDuration(c.duration_s) : '';
+      if (detailCells.headerDuration.textContent !== newDur) {
+        detailCells.headerDuration.textContent = newDur;
+      }
+    }
     for (const sv of c.solvers) {
       const cells = detailCells.solverCells.get(sv.model);
       if (!cells) continue;
@@ -1222,6 +1255,7 @@ function renderDetail(challenges) {
       <span class="spacer"></span>
       ${chip(c.status)}
       <span class="meta mono detail-cost">${c.cost_usd > 0 ? `${fmtUsd(c.cost_usd)} spent` : ''}</span>
+      <span class="meta mono detail-duration">${c.duration_s ? fmtDuration(c.duration_s) : ''}</span>
       <button class="close" onclick="closeDetail()" aria-label="Close">✕</button>
     </div>`;
 
@@ -1324,6 +1358,7 @@ function renderDetail(challenges) {
   // step_count / cost without rebuilding the whole panel.
   detailCells = {
     headerCost: detailHostEl.querySelector('.detail-cost'),
+    headerDuration: detailHostEl.querySelector('.detail-duration'),
     solverCells: new Map(),
   };
   detailHostEl.querySelectorAll('tr[data-model]').forEach(tr => {
@@ -1648,11 +1683,19 @@ setInterval(() => { for (const k of expandedLogs) fetchLogInto(k); }, 4000);
 # in via broadcast(); clients pull via _sse_handler.
 
 class EventHub:
+    # How many recent events to keep so newly-connecting clients (e.g. on
+    # page refresh / mobile re-connect) get a backlog instead of an empty
+    # event panel. Sized to comfortably cover an hour of typical activity.
+    _HISTORY_MAX = 200
+
     def __init__(self) -> None:
         self.clients: list[asyncio.Queue[dict]] = []
+        # Keep a bounded ring of every event we've broadcast this run.
+        # Replayed once on each new SSE connection in `replay_history`.
+        self.history: collections.deque[dict] = collections.deque(maxlen=self._HISTORY_MAX)
 
     def add(self) -> asyncio.Queue[dict]:
-        q: asyncio.Queue[dict] = asyncio.Queue(maxsize=200)
+        q: asyncio.Queue[dict] = asyncio.Queue(maxsize=400)
         self.clients.append(q)
         return q
 
@@ -1660,8 +1703,17 @@ class EventHub:
         with contextlib.suppress(ValueError):
             self.clients.remove(q)
 
+    def replay_history(self, q: asyncio.Queue[dict]) -> None:
+        """Replay buffered events into a freshly-connected client's queue.
+        Called by the SSE handler right after `add()` so the events panel
+        repopulates immediately on page refresh."""
+        for evt in self.history:
+            with contextlib.suppress(asyncio.QueueFull):
+                q.put_nowait({"type": "event", "payload": evt})
+
     def broadcast(self, kind: str, **fields: Any) -> None:
         evt = {"ts": time.time(), "kind": kind, **fields}
+        self.history.append(evt)
         for q in list(self.clients):
             try:
                 q.put_nowait({"type": "event", "payload": evt})
@@ -1727,11 +1779,13 @@ def _build_status(deps: Any, run_id: str) -> dict:
         })
 
     challenges_out = []
+    now_ts = time.time()
     for name in sorted(stubs_by_name.keys()):
         stub = stubs_by_name[name]
         swarm = deps.swarms.get(name)
         solvers_out: list[dict] = []
         cost = 0.0
+        duration_s: float | None = None
         if swarm is not None:
             # cancel_event is set in two cases: a winner found the flag
             # (swarm.kill self-issued) OR the operator/coordinator killed
@@ -1763,6 +1817,14 @@ def _build_status(deps: Any, run_id: str) -> dict:
                     "confirmed": getattr(solver, "_confirmed", False),
                 })
             cost = sum(s["cost_usd"] for s in solvers_out)
+            # Wall-clock solve duration. While running we tick up live
+            # (now - started); once finished we freeze at finished -
+            # started so the tile shows the final time, not "still
+            # ticking".
+            sa = getattr(swarm, "started_at", None)
+            fa = getattr(swarm, "finished_at", None)
+            if sa is not None:
+                duration_s = (fa if fa is not None else now_ts) - sa
         else:
             # Never spawned — show solve status from CTFd if known.
             status = "done" if name in solved else "queued"
@@ -1775,6 +1837,7 @@ def _build_status(deps: Any, run_id: str) -> dict:
             "ctfd_solved": name in solved,
             "status": status,
             "cost_usd": cost,
+            "duration_s": duration_s,
             "solvers": solvers_out,
         })
 
@@ -1830,6 +1893,9 @@ async def _events(request: web.Request) -> web.StreamResponse:
     queue = hub.add()
     # Initial snapshot so the page renders before any state change.
     queue.put_nowait({"type": "status", "payload": _build_status(deps, run_id)})
+    # Replay buffered events so the events panel isn't empty on page
+    # refresh / SSE reconnect.
+    hub.replay_history(queue)
 
     try:
         while True:
@@ -1848,6 +1914,466 @@ async def _events(request: web.Request) -> web.StreamResponse:
     finally:
         hub.remove(queue)
     return resp
+
+
+WRITEUPS_HTML = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>ctf-agent — writeups</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+/* Tokens / typography mirror INDEX_HTML so the writeups page is visually
+   indistinguishable from the dashboard. Keep the two stylesheets in sync
+   when tweaking either. */
+:root {
+  --md-sys-color-surface:                  #141218;
+  --md-sys-color-surface-container-lowest: #0f0d13;
+  --md-sys-color-surface-container-low:    #1d1b20;
+  --md-sys-color-surface-container:        #211f26;
+  --md-sys-color-surface-container-high:   #2b2930;
+  --md-sys-color-on-surface:               #e6e0e9;
+  --md-sys-color-on-surface-variant:       #cac4d0;
+  --md-sys-color-outline:                  #938f99;
+  --md-sys-color-outline-variant:          #49454f;
+  --md-sys-color-primary:                  #d0bcff;
+  --md-success:        #a5d6a7;
+  --md-info:           #90caf9;
+  --md-elev-1: 0 1px 2px 0 rgba(0,0,0,.30), 0 1px 3px 1px rgba(0,0,0,.15);
+  --md-elev-2: 0 1px 2px 0 rgba(0,0,0,.30), 0 2px 6px 2px rgba(0,0,0,.15);
+  --md-shape-xs: 4px;
+  --md-shape-sm: 8px;
+  --md-shape-md: 12px;
+  --md-shape-xl: 28px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; height: 100%; }
+body {
+  background: var(--md-sys-color-surface);
+  color: var(--md-sys-color-on-surface);
+  font-family: "Roboto", "Google Sans", system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.43;
+  letter-spacing: 0.0179em;
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+.app-bar {
+  display: flex; gap: 24px; align-items: center; flex-wrap: wrap;
+  padding: 12px 24px;
+  background: var(--md-sys-color-surface-container);
+  box-shadow: var(--md-elev-2);
+  position: sticky; top: 0; z-index: 10;
+}
+.app-bar .brand {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 22px; line-height: 28px; font-weight: 500;
+  color: var(--md-sys-color-on-surface);
+}
+.app-bar .brand .dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--md-success);
+  box-shadow: 0 0 8px var(--md-success);
+  animation: pulse 2s infinite;
+}
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
+.app-bar .crumb {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 14px;
+}
+.app-bar a.hdr-link {
+  color: var(--md-sys-color-primary);
+  text-decoration: none;
+  font-size: 13px; font-weight: 500;
+  padding: 6px 12px;
+  border-radius: var(--md-shape-xl);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  transition: background-color .15s, border-color .15s;
+}
+.app-bar a.hdr-link:hover {
+  background: rgba(208, 188, 255, .08);
+  border-color: var(--md-sys-color-outline);
+}
+.app-bar .right {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--md-sys-color-on-surface-variant);
+  font-family: "Roboto Mono", monospace;
+}
+main {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 24px;
+  padding: 24px;
+  max-width: 1280px;
+  margin: 0 auto;
+  align-items: start;
+}
+/* Critical: grid items default to min-width: auto, which lets a wide
+   <pre> block stretch the column past the viewport. min-width: 0 lets
+   pre's own `overflow-x: auto` kick in instead. */
+main > nav.toc, main > .col-main { min-width: 0; }
+main > .col-main { display: flex; flex-direction: column; min-width: 0; }
+@media (max-width: 900px) {
+  main { grid-template-columns: minmax(0, 1fr); padding: 14px; gap: 14px; }
+  nav.toc { position: static !important; max-height: none !important; padding: 0 !important; box-shadow: none !important; background: transparent !important; }
+}
+nav.toc {
+  position: sticky; top: 80px;
+  background: var(--md-sys-color-surface-container);
+  border-radius: var(--md-shape-md);
+  padding: 16px;
+  box-shadow: var(--md-elev-1);
+  max-height: calc(100vh - 96px); overflow: auto;
+}
+nav.toc h3 {
+  margin: 0 0 8px; font-size: 11px; letter-spacing: .045em;
+  text-transform: uppercase; color: var(--md-sys-color-on-surface-variant);
+  font-weight: 500;
+}
+nav.toc ul { list-style: none; padding: 0; margin: 0; }
+nav.toc li + li { margin-top: 2px; }
+nav.toc a {
+  display: block; padding: 8px 10px; border-radius: 6px;
+  color: var(--md-sys-color-on-surface);
+  text-decoration: none; font-size: 13px;
+  border-left: 2px solid transparent;
+}
+nav.toc a:hover {
+  background: rgba(208,188,255,.08);
+  color: var(--md-sys-color-primary);
+  border-left-color: var(--md-sys-color-primary);
+}
+nav.toc .meta {
+  display: block; font-size: 10.5px;
+  color: var(--md-sys-color-on-surface-variant);
+  font-family: "Roboto Mono", monospace;
+  margin-top: 2px;
+}
+
+/* Collapsible TOC on mobile. <details> is a tap-to-expand element on
+   small screens; on desktop we hide the <summary> and JS forces it
+   open so the sidebar always shows. */
+.toc-details > summary {
+  display: none;
+  list-style: none;
+  cursor: pointer;
+  padding: 12px 14px;
+  background: var(--md-sys-color-surface-container);
+  border-radius: var(--md-shape-md);
+  box-shadow: var(--md-elev-1);
+  align-items: center; gap: 10px;
+  font-size: 13px; font-weight: 500;
+  letter-spacing: 0.045em; text-transform: uppercase;
+  color: var(--md-sys-color-on-surface-variant);
+  margin-bottom: 12px;
+}
+.toc-details > summary::-webkit-details-marker { display: none; }
+.toc-details > summary::marker { display: none; }
+.toc-details > summary .chev {
+  margin-left: auto;
+  transition: transform .2s ease;
+  color: var(--md-sys-color-primary);
+}
+.toc-details[open] > summary .chev { transform: rotate(180deg); }
+.toc-details > summary .count {
+  color: var(--md-sys-color-on-surface);
+  font-weight: 500;
+}
+@media (max-width: 900px) {
+  .toc-details > summary { display: flex; }
+  .toc-details > .toc-panel {
+    background: var(--md-sys-color-surface-container);
+    border-radius: var(--md-shape-md);
+    padding: 12px;
+    box-shadow: var(--md-elev-1);
+  }
+  .toc-details:not([open]) > .toc-panel { display: none; }
+  /* On mobile, hide the redundant "Writeups" h3 inside the panel —
+     summary already serves as the section label. */
+  .toc-details > .toc-panel h3 { display: none; }
+}
+/* The card itself is the dark surface ("page" of the writeup). Keeps the
+   inner code/pre blocks one tone lighter — same hierarchy as the dashboard
+   .writeup panel. */
+.writeup-card {
+  background: var(--md-sys-color-surface-container-lowest);
+  border-radius: var(--md-shape-sm);
+  box-shadow: var(--md-elev-1);
+  padding: 20px 24px;
+  margin-bottom: 24px;
+  scroll-margin-top: 80px;
+  font-size: 14px; line-height: 1.6;
+  /* Card never grows past its grid track — wide content scrolls inside
+     <pre> rather than stretching the card. */
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: break-word;
+}
+.writeup-content { min-width: 0; max-width: 100%; }
+.writeup-content pre { max-width: 100%; }
+/* HTML body backstop: ensures no top-level overflow-x can sneak past the
+   viewport on mobile (long URLs in headings, etc.). */
+body { overflow-x: hidden; }
+.writeup-card h2.slug {
+  margin: 0 0 6px; font-size: 22px; font-weight: 500;
+  color: var(--md-sys-color-primary);
+  font-family: "Roboto Mono", monospace;
+  letter-spacing: -0.01em;
+}
+.writeup-card .path {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: 11px; font-family: "Roboto Mono", monospace;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+  margin-bottom: 12px;
+  word-break: break-all;
+}
+.writeup-content h1, .writeup-content h2,
+.writeup-content h3, .writeup-content h4 {
+  color: var(--md-sys-color-on-surface);
+  margin-top: 24px; margin-bottom: 8px; font-weight: 500;
+}
+.writeup-content h1 { font-size: 22px; }
+.writeup-content h2 { font-size: 18px; color: var(--md-sys-color-primary); }
+.writeup-content h3 { font-size: 15px; }
+.writeup-content h4 { font-size: 14px; color: var(--md-sys-color-on-surface-variant); }
+.writeup-content p  { margin: 8px 0 12px; }
+.writeup-content code {
+  background: var(--md-sys-color-surface-container);
+  padding: 2px 6px; border-radius: 4px;
+  font-family: "Roboto Mono", monospace; font-size: 12.5px;
+}
+.writeup-content pre {
+  background: var(--md-sys-color-surface-container);
+  border-radius: 6px; padding: 12px;
+  overflow: auto; margin: 12px 0;
+  font-family: "Roboto Mono", monospace; font-size: 12px; line-height: 1.5;
+}
+.writeup-content pre code { background: transparent; padding: 0; }
+.writeup-content ul, .writeup-content ol { padding-left: 24px; margin: 8px 0 12px; }
+.writeup-content li { margin: 4px 0; }
+.writeup-content blockquote {
+  border-left: 3px solid var(--md-sys-color-outline);
+  padding-left: 12px; margin: 12px 0;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.writeup-content table {
+  border-collapse: collapse; margin: 12px 0; font-size: 13px;
+}
+.writeup-content th, .writeup-content td {
+  border: 1px solid var(--md-sys-color-outline-variant);
+  padding: 6px 10px; text-align: left;
+}
+.writeup-content th { background: var(--md-sys-color-surface-container); }
+.writeup-content a { color: var(--md-info); text-decoration: none; }
+.writeup-content a:hover { text-decoration: underline; }
+.writeup-content hr {
+  border: none; border-top: 1px solid var(--md-sys-color-outline-variant);
+  margin: 18px 0;
+}
+.empty {
+  padding: 64px 24px; text-align: center;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.empty .icon { font-size: 32px; display: block; margin-bottom: 8px; opacity: .6; }
+.skeleton {
+  padding: 24px; color: var(--md-sys-color-on-surface-variant);
+  text-align: center;
+}
+@media (max-width: 640px) {
+  .app-bar { padding: 10px 14px; gap: 8px 12px; }
+  .app-bar .brand { font-size: 17px; line-height: 22px; }
+  .app-bar .brand .dot { width: 8px; height: 8px; }
+  .app-bar .crumb { font-size: 12px; }
+  .app-bar a.hdr-link { padding: 5px 10px; font-size: 12px; }
+  .app-bar .right { font-size: 11px; }
+  main { padding: 10px; gap: 10px; }
+  .writeup-card { padding: 12px 14px; font-size: 13.5px; line-height: 1.55; }
+  .writeup-card h2.slug { font-size: 17px; word-break: break-all; }
+  .writeup-card .path { font-size: 10.5px; }
+  .writeup-content h1 { font-size: 19px; }
+  .writeup-content h2 { font-size: 16px; margin-top: 18px; }
+  .writeup-content h3 { font-size: 14px; }
+  .writeup-content h4 { font-size: 13px; }
+  .writeup-content p, .writeup-content li { font-size: 13.5px; }
+  .writeup-content code { font-size: 11.5px; padding: 1px 4px; }
+  .writeup-content pre { font-size: 10.5px; padding: 10px; line-height: 1.45; }
+  .writeup-content table { font-size: 12px; display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .writeup-content blockquote { padding-left: 10px; }
+  /* Forces overflow-prone monospace tokens (long hex literals, paths)
+     to wrap so they don't blow out the card width on narrow screens.
+     Inline `<code>` only — `<pre>` retains horizontal scroll. */
+  .writeup-content :not(pre) > code { word-break: break-all; }
+}
+@media (max-width: 380px) {
+  main { padding: 8px; }
+  .writeup-card { padding: 10px 12px; }
+  .writeup-content pre { font-size: 10px; }
+  nav.toc a { font-size: 12px; padding: 6px 8px; }
+  nav.toc .meta { font-size: 10px; }
+}
+</style>
+</head>
+<body>
+<header class="app-bar">
+  <div class="brand"><span class="dot"></span>ctf-agent</div>
+  <div class="crumb">/ writeups</div>
+  <a class="hdr-link" href="/">← dashboard</a>
+  <div class="right" id="hdr-count">—</div>
+</header>
+<main>
+  <nav class="toc">
+    <details class="toc-details">
+      <summary>
+        <span>Writeups</span>
+        <span class="count" id="toc-summary-count">—</span>
+        <span class="chev">▾</span>
+      </summary>
+      <div class="toc-panel">
+        <h3>Writeups</h3>
+        <ul id="toc"></ul>
+      </div>
+    </details>
+  </nav>
+  <div class="col-main">
+    <div id="writeups">
+      <div class="skeleton">Loading writeups…</div>
+    </div>
+  </div>
+</main>
+<script>
+const escapeHTML = s => String(s).replace(/[&<>"']/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function fmtTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  return d.toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: '2-digit',
+    hour: '2-digit', minute: '2-digit'
+  });
+}
+function fmtKB(n) {
+  if (!n) return '';
+  return (n / 1024).toFixed(1) + ' KB';
+}
+
+async function load() {
+  let r;
+  try {
+    r = await fetch('/api/writeups');
+  } catch (e) {
+    document.getElementById('writeups').innerHTML =
+      `<div class="empty"><span class="icon">⚠</span>Network error: ${escapeHTML(e.message)}</div>`;
+    return;
+  }
+  const d = await r.json();
+  const items = d.writeups || [];
+  document.getElementById('hdr-count').textContent =
+    items.length + ' writeup' + (items.length === 1 ? '' : 's');
+  document.getElementById('toc-summary-count').textContent =
+    '(' + items.length + ')';
+
+  if (items.length === 0) {
+    document.getElementById('writeups').innerHTML =
+      `<div class="empty"><span class="icon">∅</span>No writeups yet.</div>`;
+    return;
+  }
+  if (typeof marked !== 'undefined' && marked.setOptions) {
+    marked.setOptions({ breaks: true, gfm: true });
+  }
+  const tocEl = document.getElementById('toc');
+  const wrapEl = document.getElementById('writeups');
+  tocEl.innerHTML = items.map(it =>
+    `<li><a href="#wu-${escapeHTML(it.slug)}">
+       ${escapeHTML(it.slug)}
+       <span class="meta">${fmtTime(it.mtime)} · ${fmtKB(it.size)}</span>
+     </a></li>`
+  ).join('');
+  wrapEl.innerHTML = items.map(it => {
+    const body = (typeof marked !== 'undefined' && marked.parse)
+      ? marked.parse(it.text || '')
+      : `<pre>${escapeHTML(it.text || '')}</pre>`;
+    return `<article class="writeup-card" id="wu-${escapeHTML(it.slug)}">
+      <h2 class="slug">${escapeHTML(it.slug)}</h2>
+      <div class="path">${escapeHTML(it.path)} · ${fmtTime(it.mtime)} · ${fmtKB(it.size)}</div>
+      <div class="writeup-content">${body}</div>
+    </article>`;
+  }).join('');
+}
+
+/* TOC behaviour:
+   - Desktop (≥901px): always-open as a sidebar (summary hidden via CSS).
+   - Mobile (≤900px): collapsed by default; tap the summary to expand. */
+function syncTocOpen() {
+  const det = document.querySelector('.toc-details');
+  if (!det) return;
+  if (window.innerWidth >= 901) {
+    det.open = true;
+  } else if (!det.dataset.userToggled) {
+    det.open = false;
+  }
+}
+document.querySelector('.toc-details')?.addEventListener('toggle', (e) => {
+  /* Once the user has manually expanded/collapsed on mobile, respect their
+     choice for the rest of the page life. */
+  if (window.innerWidth < 901) e.target.dataset.userToggled = '1';
+});
+syncTocOpen();
+window.addEventListener('resize', syncTocOpen);
+
+load();
+</script>
+</body></html>
+"""
+
+
+async def _writeups_page(request: web.Request) -> web.Response:
+    return web.Response(body=WRITEUPS_HTML, content_type="text/html")
+
+
+async def _writeups_list(request: web.Request) -> web.Response:
+    """Return all writeups (latest per slug) with their rendered text inline.
+
+    The `/writeups` page fetches this once and renders everything client-side
+    via marked.js, mirroring the dashboard's writeup panel.
+    """
+    deps = request.app["deps"]
+    session_name = getattr(deps.settings, "session_name", "default") or "default"
+    writeups_dir = Path("sessions") / session_name / "writeups"
+    if not writeups_dir.exists():
+        return web.json_response({"writeups": []})
+
+    import re
+    suffix_re = re.compile(r"^(.+)-\d{8}-\d{6}$")
+    by_slug: dict[str, Path] = {}
+    for p in writeups_dir.glob("*.md"):
+        m = suffix_re.match(p.stem)
+        slug = m.group(1) if m else p.stem
+        prev = by_slug.get(slug)
+        if prev is None or p.stat().st_mtime > prev.stat().st_mtime:
+            by_slug[slug] = p
+
+    items: list[dict[str, Any]] = []
+    for slug, path in by_slug.items():
+        try:
+            text = path.read_text(encoding="utf-8")
+            st = path.stat()
+        except OSError:
+            continue
+        items.append({
+            "slug": slug,
+            "path": str(path),
+            "mtime": st.st_mtime,
+            "size": st.st_size,
+            "text": text,
+        })
+    items.sort(key=lambda x: x["mtime"], reverse=True)
+    return web.json_response({"writeups": items})
 
 
 async def _writeup(request: web.Request) -> web.Response:
@@ -1957,10 +2483,12 @@ def build_app(deps: Any, run_id: str) -> web.Application:
     app["run_id"] = run_id
     app["hub"] = EventHub()
     app.router.add_get("/", _index)
+    app.router.add_get("/writeups", _writeups_page)
     app.router.add_get("/api/status", _status)
     app.router.add_get("/api/events", _events)
     app.router.add_get("/api/logs/{chal}/{model}", _logs)
     app.router.add_get("/api/writeup/{chal}", _writeup)
+    app.router.add_get("/api/writeups", _writeups_list)
     app.router.add_post("/api/msg", _msg)
     app.router.add_post("/api/swarms/{chal}/kill", _kill_swarm)
     app.router.add_post("/api/spawn", _spawn)

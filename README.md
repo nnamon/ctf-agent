@@ -229,9 +229,12 @@ SKIP_CHALLENGES=["*/destruction/*", "*manual-only*"]
 --models codex/gpt-5.4-mini
 --models claude-sdk/claude-opus-4-7
 
-# Per-solve writeup model — provider-agnostic, routes via prefix
+# Per-solve writeup model — provider-agnostic, routes via prefix.
+# Default is claude-opus-4-7: empirically the best fit for the
+# rigorous-postmortem prompt (codex/gpt-5.5 reasoning passes can stall
+# past the 900s text_completion timeout on large traces).
+--writeup-model claude-opus-4-7        # claude SDK (default)
 --writeup-model codex/gpt-5.5          # codex app-server one-shot
---writeup-model claude-opus-4-7        # claude SDK
 --writeup-model bedrock/...            # pydantic-ai
 ```
 

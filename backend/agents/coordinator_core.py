@@ -115,20 +115,21 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
             not deps.swarms[challenge_name].cancel_event.is_set():
         return f"Swarm still running for {challenge_name}"
 
-    # Per-session quota check. Block new spawns when persisted + in-process
-    # cost would already be over budget. Active swarms continue to run —
-    # we don't kill mid-attempt, just refuse to start more.
+    # Per-session quota check. Block new spawns when the full session-
+    # to-date cost (carryover from prior runs + this run's live cost,
+    # both already folded into total_cost_usd) is over budget. Active
+    # swarms continue to run — we don't kill mid-attempt, just refuse
+    # to start more.
     quota = getattr(deps.settings, "quota_usd", None)
     if quota is not None:
-        usage_db = getattr(deps.settings, "usage_log_path", None)
-        session = getattr(deps.settings, "session_name", "default")
-        persisted = 0.0
-        if usage_db:
-            from backend.usage_log import session_total_usd
-            from pathlib import Path as _P
-            persisted = session_total_usd(_P(usage_db), session)
-        spent = persisted + deps.cost_tracker.total_cost_usd
+        spent = deps.cost_tracker.total_cost_usd
         if spent >= quota:
+            session = getattr(deps.settings, "session_name", "default")
+            if deps.event_hub:
+                deps.event_hub.broadcast(
+                    "quota_exceeded", challenge=challenge_name,
+                    text=f"refused {challenge_name}: spent ${spent:.2f} of ${quota:.2f}",
+                )
             return (
                 f"Session quota exceeded: spent ${spent:.2f} of "
                 f"${quota:.2f}. Refusing to spawn new swarm. "
@@ -182,11 +183,24 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
                 "flag": result.flag,
                 "submit": "DRY RUN" if deps.no_submit else "confirmed by solver",
             }
+            if deps.event_hub:
+                # Truncated so a long flag doesn't blow up the event panel.
+                flag_short = (result.flag or "")[:60]
+                deps.event_hub.broadcast(
+                    "flag_found", challenge=challenge_name,
+                    model=swarm.winner_spec or "?",
+                    text=f"{challenge_name}: {flag_short}",
+                )
             if not deps.no_writeup:
                 await _generate_writeup_for_swarm(swarm, result, deps, duration_s)
 
     task = asyncio.create_task(_run_and_cleanup(), name=f"swarm-{challenge_name}")
     deps.swarm_tasks[challenge_name] = task
+    if deps.event_hub:
+        deps.event_hub.broadcast(
+            "swarm_spawned", challenge=challenge_name,
+            text=f"spawned {challenge_name} ({len(deps.model_specs)} models)",
+        )
     return f"Swarm spawned for {challenge_name} with {len(deps.model_specs)} models"
 
 
@@ -298,6 +312,14 @@ async def _generate_writeup_for_swarm(swarm, winner_result, deps: CoordinatorDep
             explicit=getattr(deps.settings, "session_name", None)
         )
 
+        if deps.event_hub:
+            deps.event_hub.broadcast(
+                "writeup_start", challenge=swarm.meta.name,
+                model=deps.writeup_model,
+                text=f"writeup start: {swarm.meta.name} ({deps.writeup_model})",
+            )
+        wstart = time.monotonic()
+
         out = await generate_writeup(
             meta=swarm.meta,
             winner_result=winner_result,
@@ -309,8 +331,19 @@ async def _generate_writeup_for_swarm(swarm, winner_result, deps: CoordinatorDep
             model=deps.writeup_model,
             settings=deps.settings,
         )
+        wdur = time.monotonic() - wstart
         if out:
             logger.info("Post-mortem writeup written: %s", out)
+            if deps.event_hub:
+                try:
+                    size_kb = Path(out).stat().st_size / 1024.0
+                except OSError:
+                    size_kb = 0.0
+                deps.event_hub.broadcast(
+                    "writeup_done", challenge=swarm.meta.name,
+                    model=deps.writeup_model, path=str(out),
+                    text=f"writeup done: {swarm.meta.name} ({size_kb:.1f} KB, {wdur:.0f}s)",
+                )
             # Attach to the AttemptLog row so an orchestrator can locate
             # the writeup for chain-sibling --context attachments without
             # fs-walking writeups/.
@@ -321,6 +354,12 @@ async def _generate_writeup_for_swarm(swarm, winner_result, deps: CoordinatorDep
                     )
                 except Exception:
                     pass
+        elif deps.event_hub:
+            deps.event_hub.broadcast(
+                "writeup_failed", challenge=swarm.meta.name,
+                model=deps.writeup_model,
+                text=f"writeup failed: {swarm.meta.name} (empty output)",
+            )
 
         # Persist the preserved-workspace path (when --preserve-workspace is on)
         # for the same orchestrator-discoverability reason.
@@ -338,3 +377,9 @@ async def _generate_writeup_for_swarm(swarm, winner_result, deps: CoordinatorDep
                 pass
     except Exception as e:
         logger.warning("Post-mortem failed for %s: %s", swarm.meta.name, e, exc_info=True)
+        if deps.event_hub:
+            deps.event_hub.broadcast(
+                "writeup_failed", challenge=swarm.meta.name,
+                model=getattr(deps, "writeup_model", "?"),
+                text=f"writeup failed: {swarm.meta.name}: {type(e).__name__}: {str(e)[:120]}",
+            )

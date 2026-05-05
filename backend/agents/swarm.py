@@ -73,6 +73,11 @@ class ChallengeSwarm:
     winner: SolverResult | None = None
     winner_spec: str | None = None
     confirmed_flag: str | None = None
+    # Wall-clock solve timing (epoch seconds). Set by run() / its caller
+    # so the dashboard can show "solved in 14m" etc. without re-deriving
+    # from log timestamps.
+    started_at: float | None = None
+    finished_at: float | None = None
     _flag_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _submit_count: dict[str, int] = field(default_factory=dict)  # per-model wrong submission count
     _submitted_flags: set[str] = field(default_factory=set)  # dedup exact flags
@@ -315,6 +320,7 @@ class ChallengeSwarm:
 
     async def run(self) -> SolverResult | None:
         """Run all solvers in parallel. Returns the winner's result or None."""
+        self.started_at = time.time()
         tasks = [
             asyncio.create_task(self._run_solver(spec), name=f"solver-{spec}")
             for spec in self.model_specs
@@ -347,6 +353,8 @@ class ChallengeSwarm:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             return None
+        finally:
+            self.finished_at = time.time()
 
     def kill(self) -> None:
         """Cancel all agents for this challenge."""

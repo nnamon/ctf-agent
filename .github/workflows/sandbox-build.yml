@@ -1,10 +1,14 @@
 name: sandbox build
 
-# Builds the ctf-sandbox image, smoke-tests it on the native runner arch
-# (amd64), then pushes a multi-arch (amd64 + arm64) image to Docker Hub.
+# Builds the ctf-sandbox image on native runners per arch (no QEMU
+# emulation), smoke-tests each arch on its own runner, then merges
+# the per-arch digests into a single multi-arch manifest.
 #
-# Triggered when sandbox-related files change OR via manual dispatch.
-# Keeps PRs cheap by skipping unrelated commits.
+# Why split: the previous "build linux/amd64,linux/arm64 in one
+# buildx step on ubuntu-latest" took >6h because the arm64 portion
+# was emulated under QEMU. GitHub now offers free ubuntu-24.04-arm
+# runners for public repos, so each arch builds in ~30 min natively
+# and they run in parallel.
 
 on:
   push:
@@ -22,17 +26,29 @@ env:
   IMAGE: nnamon/ctf-agent
 
 jobs:
+  # One matrix arm per architecture — each runs on a NATIVE runner so
+  # the build is CPU-bound, not QEMU-bound.
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Free ~25 GB on the runner — our image hits 30 GB uncompressed and
-      # default GitHub free runners only ship with ~14 GB free. Removes
-      # pre-installed Android SDK, .NET, Haskell, etc. that we don't need.
+      # Free ~25 GB on the runner — our image hits 30 GB uncompressed
+      # and default GitHub free runners only ship with ~14 GB free.
+      # Keeps apt repos working and the docker daemon intact.
       - name: Free disk space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -40,18 +56,13 @@ jobs:
           android: true
           dotnet: true
           haskell: true
-          large-packages: false  # keeps apt repos working
-          docker-images: false   # we're about to use docker
+          large-packages: false
+          docker-images: false
           swap-storage: false
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Login is needed for both pull (cache base layers) and push.
-      # Skip on PRs since they can't read the secret.
       - name: Login to Docker Hub
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: docker/login-action@v3
@@ -59,38 +70,89 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Phase 1: build amd64 only, load locally, smoke-test it.
-      # Using a single-arch build for the smoke means we can `docker run`
-      # without QEMU emulation lag.
-      - name: Build amd64 (for smoke test)
+      # Build single-arch (native — no QEMU). Load locally so smoke can
+      # `docker run` against it; also push by-digest below for the merge.
+      - name: Build (${{ matrix.arch }}, native)
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
           file: sandbox/Dockerfile.sandbox
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           load: true
           tags: ctf-sandbox:smoke
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Per-arch cache scope so amd64 and arm64 don't churn each
+          # other's gha cache lanes.
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
 
-      - name: Smoke test
+      - name: Smoke test (${{ matrix.arch }})
         run: |
           docker tag ctf-sandbox:smoke ctf-sandbox:latest
           ./sandbox/build.sh --no-build
 
-      # Phase 2: multi-arch build + push (only on main / manual run).
-      # Cache hits make the amd64 portion near-instant since phase 1
-      # already populated the gha cache backend.
-      - name: Build multi-arch & push
+      # Push by-digest so the final job can merge per-arch digests into
+      # a single manifest. The digest is content-addressable and
+      # arch-tagged via the `index` API on docker buildx imagetools.
+      - name: Push by digest (${{ matrix.arch }})
+        id: push
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: docker/build-push-action@v5
         with:
           context: .
           file: sandbox/Dockerfile.sandbox
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.IMAGE }}:latest
-            ${{ env.IMAGE }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.arch }}
+
+      - name: Export digest
+        id: digest
+        if: steps.push.outcome == 'success'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.push.outputs.digest }}"
+          echo "${{ matrix.arch }}=${digest}" >> "$GITHUB_OUTPUT"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest artifact
+        if: steps.push.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  # Merge per-arch digests into one multi-arch manifest under :latest
+  # and the commit SHA. Cheap (no rebuild) — just composes a manifest
+  # list from already-pushed by-digest images.
+  merge:
+    needs: build
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            -t ${{ env.IMAGE }}:latest \
+            -t ${{ env.IMAGE }}:${{ github.sha }} \
+            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+
+      - name: Inspect resulting image
+        run: docker buildx imagetools inspect ${{ env.IMAGE }}:latest

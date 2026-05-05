@@ -150,6 +150,38 @@ class AgentUsage:
 @dataclass
 class CostTracker:
     by_agent: dict[str, AgentUsage] = field(default_factory=dict)
+    # Snapshot of `by_agent` state at the most recent flush_to_log call.
+    # Used to compute deltas so we can flush incrementally without
+    # double-counting cost across multiple flushes per run.
+    last_flushed: dict[str, AgentUsage] = field(default_factory=dict)
+    # Cost already persisted to the session's usage_log from previous
+    # coordinator runs. Seeded once at startup via `for_session()` so the
+    # dashboard / quota check sees the full session-to-date cost even
+    # after a coordinator restart.
+    session_carryover_usd: float = 0.0
+
+    @classmethod
+    def for_session(cls, settings: Any) -> "CostTracker":
+        """Construct a tracker with `session_carryover_usd` seeded from
+        the persisted usage_log so the cost is continuous across
+        coordinator restarts. Falls back to zero carryover when usage
+        logging is disabled or the DB read fails."""
+        tracker = cls()
+        usage_db = getattr(settings, "usage_log_path", None)
+        session_name = getattr(settings, "session_name", "default") or "default"
+        if usage_db:
+            try:
+                from pathlib import Path as _P
+                from backend.usage_log import session_total_usd
+                tracker.session_carryover_usd = session_total_usd(_P(usage_db), session_name)
+                if tracker.session_carryover_usd > 0:
+                    logger.info(
+                        "Session %r carryover from usage_log: $%.2f",
+                        session_name, tracker.session_carryover_usd,
+                    )
+            except Exception as e:
+                logger.warning("CostTracker carryover seed failed: %s", e)
+        return tracker
 
     def record_tokens(
         self,
@@ -197,8 +229,17 @@ class CostTracker:
         )
 
     @property
-    def total_cost_usd(self) -> float:
+    def live_cost_usd(self) -> float:
+        """Cost accrued in the current process only (excludes carryover
+        from prior runs of the same session)."""
         return sum(a.cost_usd for a in self.by_agent.values())
+
+    @property
+    def total_cost_usd(self) -> float:
+        """Full session cost: carryover from prior runs + this run's live
+        cost. This is what the dashboard quota figure and the in-process
+        quota gate read."""
+        return self.session_carryover_usd + self.live_cost_usd
 
     @property
     def total_tokens(self) -> int:
@@ -250,11 +291,16 @@ class CostTracker:
         total_cached = sum(s["cached"] for s in by_model.values())
         overall_hit = f"{(total_cached / total * 100):.0f}%" if total > 0 else "n/a"
         logger.info(
-            "  Total: $%.2f | %s tokens | %s overall cache hit rate",
-            self.total_cost_usd,
+            "  Run total: $%.2f | %s tokens | %s overall cache hit rate",
+            self.live_cost_usd,
             _fmt_tokens(self.total_tokens),
             overall_hit,
         )
+        if self.session_carryover_usd > 0:
+            logger.info(
+                "  Session total (incl. prior runs): $%.2f",
+                self.total_cost_usd,
+            )
 
     def flush_to_log(
         self,
@@ -262,19 +308,35 @@ class CostTracker:
         run_id: str,
         session_name: str,
     ) -> None:
-        """Persist one row per agent into the session usage log.
+        """Persist DELTA cost since the previous flush as one row per
+        agent into the session usage_log.
 
-        Called at end-of-run from the CLI / coordinator. No-op when db_path
-        is empty (operator opted out of usage logging) or no agents have
-        recorded anything yet. Errors are swallowed inside usage_log
+        Safe to call repeatedly during a run: only the new tokens / cost
+        accrued since the last flush are written. SUM(cost_usd) over a
+        session still yields the correct cumulative cost. The coordinator
+        loop calls this every status tick so a crash doesn't lose the
+        in-flight bill; the final end-of-run flush captures the tail.
+
+        No-op when db_path is empty (operator opted out of usage logging)
+        or there's no new activity. Errors are swallowed inside usage_log
         helpers — accounting must not break a successful solve.
         """
         if not db_path or not self.by_agent:
             return
+        from copy import deepcopy
         from pathlib import Path
+
         from backend.usage_log import UsageRow, insert_row
         ts = int(time.time())
         for agent_name, agent in self.by_agent.items():
+            prev = self.last_flushed.get(agent_name)
+            d_input  = agent.usage.input_tokens      - (prev.usage.input_tokens      if prev else 0)
+            d_output = agent.usage.output_tokens     - (prev.usage.output_tokens     if prev else 0)
+            d_cached = agent.usage.cache_read_tokens - (prev.usage.cache_read_tokens if prev else 0)
+            d_cost   = agent.cost_usd                - (prev.cost_usd                if prev else 0.0)
+            d_dur    = agent.duration_seconds        - (prev.duration_seconds        if prev else 0.0)
+            if d_input == 0 and d_output == 0 and d_cost == 0:
+                continue  # nothing new since last flush
             # Best-effort split: 'challenge/model' is the usual format.
             chall = agent_name.split("/", 1)[0] if "/" in agent_name else None
             row = UsageRow(
@@ -284,11 +346,14 @@ class CostTracker:
                 challenge_name=chall,
                 model_name=agent.model_name,
                 provider_spec=agent.provider_spec or None,
-                input_tokens=agent.usage.input_tokens,
-                output_tokens=agent.usage.output_tokens,
-                cache_read_tokens=agent.usage.cache_read_tokens,
-                cost_usd=agent.cost_usd,
-                duration_seconds=agent.duration_seconds,
+                input_tokens=d_input,
+                output_tokens=d_output,
+                cache_read_tokens=d_cached,
+                cost_usd=d_cost,
+                duration_seconds=d_dur,
                 ts=ts,
             )
             insert_row(Path(db_path), row)
+            # Snapshot for the next delta computation. deepcopy because
+            # AgentUsage holds a mutable RunUsage that we keep mutating.
+            self.last_flushed[agent_name] = deepcopy(agent)

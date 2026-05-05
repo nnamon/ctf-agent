@@ -48,6 +48,12 @@ RUN apt-get update && apt-get install -y \
     sagemath \
     # CADO-NFS build deps
     libhwloc-dev libbz2-dev \
+    # General tooling the agent reaches for by default — empirically the
+    # most-attempted missing binaries across the trace logs.
+    ripgrep \
+    nasm \
+    llvm \
+    python-is-python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Podman (nested containers — run challenge Docker images inside sandbox) ───
@@ -68,6 +74,15 @@ RUN git clone --depth=1 https://github.com/radareorg/radare2 /tmp/r2 \
     && ldconfig \
     && r2 -v \
     && rm -rf /tmp/r2
+
+# ── r2ghidra (Ghidra decompiler integrated into radare2) ────────────────────
+# Lets `pdg` inside r2 (or `r2 -qc 'pdg' ./binary`) emit Ghidra-quality
+# decompilation without exiting r2. Solvers reach for this 9+ times in the
+# logs; without it, `pdg` silently falls back to the much less useful
+# ghidra-less default. Build via r2pm so it tracks the installed r2 ABI.
+RUN r2pm -U \
+    && r2pm -ci r2ghidra \
+    || echo "r2ghidra install failed (non-fatal — r2 native pdc still works)"
 
 # ── flatter (fast lattice reduction — Keegan Ryan's fork) ────────────────────
 RUN git clone --depth=1 https://github.com/keeganryan/flatter /tmp/flatter \
@@ -218,7 +233,54 @@ RUN python3 -m pip install --no-cache-dir \
 # automatically); explicit form is the reliable fallback when it doesn't.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         qemu-user-static binfmt-support \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/qemu-i386-static /usr/local/bin/qemu-i386 \
+    && ln -sf /usr/bin/qemu-arm-static /usr/local/bin/qemu-arm \
+    && ln -sf /usr/bin/qemu-aarch64-static /usr/local/bin/qemu-aarch64 \
+    && ln -sf /usr/bin/qemu-mips-static /usr/local/bin/qemu-mips \
+    && ln -sf /usr/bin/qemu-mipsel-static /usr/local/bin/qemu-mipsel \
+    && ln -sf /usr/bin/qemu-mips64-static /usr/local/bin/qemu-mips64 \
+    && ln -sf /usr/bin/qemu-riscv64-static /usr/local/bin/qemu-riscv64 \
+    && ln -sf /usr/bin/qemu-ppc-static /usr/local/bin/qemu-ppc \
+    && ln -sf /usr/bin/qemu-ppc64-static /usr/local/bin/qemu-ppc64
+
+# ── i386 sysroot (so qemu-i386-static can run dynamically-linked i386 ELFs) ──
+# Most CTF i386 binaries (pwnable.tw, picoCTF, ROP wargames) are dynamically
+# linked: they need /lib/ld-linux.so.2 + libc.so.6 to start. On an aarch64
+# sandbox we have qemu-i386-static but NOT the i386 root, so even
+# `qemu-i386-static ./binary` fails with "/lib/ld-linux.so.2: no such file".
+# We also can't `dpkg --add-architecture i386` on arm64 hosts (no peer
+# repo). So fetch the libc6-i386 .deb directly from archive.ubuntu.com,
+# extract to /opt/i386-sysroot, and point QEMU_LD_PREFIX at it. This makes
+# `qemu-i386-static ./binary` Just Work — the operator/agent doesn't need
+# to remember the -L flag. Per-challenge libcs (e.g. pwnable.tw's
+# libc_32.so.6) still take precedence when they sit alongside the binary.
+RUN mkdir -p /opt/i386-sysroot \
+    && cd /tmp \
+    && for pkg in \
+         "g/glibc/libc6_2.35-0ubuntu3.10_i386.deb" \
+         "g/gcc-12/libstdc++6_12.3.0-1ubuntu1~22.04_i386.deb" \
+         "g/gcc-12/libgcc-s1_12.3.0-1ubuntu1~22.04_i386.deb" \
+         "z/zlib/zlib1g_1.2.11.dfsg-2ubuntu9.2_i386.deb" \
+         "n/ncurses/libtinfo6_6.3-2ubuntu0.1_i386.deb" \
+         "n/ncurses/libncurses6_6.3-2ubuntu0.1_i386.deb"; do \
+       fname=$(basename "$pkg"); \
+       url="http://archive.ubuntu.com/ubuntu/pool/main/$pkg"; \
+       (curl -fsSL "$url" -o "/tmp/$fname" \
+          && dpkg-deb -x "/tmp/$fname" /opt/i386-sysroot \
+          && rm "/tmp/$fname") \
+         || echo "i386 sysroot: $pkg failed (non-fatal — version drift?)"; \
+     done \
+    # Provide /lib/ld-linux.so.2 at the canonical path so naked `./binary`
+    # invocations through binfmt_misc (when the host kernel registers
+    # qemu-i386) also resolve their interpreter.
+    && if [ -f /opt/i386-sysroot/lib/ld-linux.so.2 ]; then \
+         ln -sf /opt/i386-sysroot/lib/ld-linux.so.2 /lib/ld-linux.so.2; \
+       elif [ -f /opt/i386-sysroot/lib/i386-linux-gnu/ld-linux.so.2 ]; then \
+         ln -sf /opt/i386-sysroot/lib/i386-linux-gnu/ld-linux.so.2 /lib/ld-linux.so.2; \
+       fi \
+    && ls -la /opt/i386-sysroot/lib/i386-linux-gnu/ /lib/ld-linux.so.2 2>&1 | head -10
+ENV QEMU_LD_PREFIX=/opt/i386-sysroot
 
 # ── Wine (run Windows PE binaries) ────────────────────────────────────────────
 # wine64 handles x86_64 PEs natively when the sandbox itself runs on amd64.
@@ -336,6 +398,27 @@ RUN git clone --depth=1 https://github.com/zrax/pycdc /tmp/pycdc \
     && cd /tmp/pycdc && cmake . && make -j$(nproc) \
     && cp pycdc pycdas /usr/local/bin/ \
     && rm -rf /tmp/pycdc
+
+# ── retdec (open-source LLVM-based decompiler) ──────────────────────────────
+# Fills the IDA/Hex-Rays-shaped hole for solvers that prefer C output over
+# r2's `pdc` or ghidra-headless. Pre-built tarball is amd64-only, so on
+# arm64 we build from source (slow but functional). The build is heavy
+# (~30-60 min) and bandwidth-bound; mark it non-fatal so a transient
+# upstream hiccup doesn't tank the whole image.
+RUN ARCH=$(dpkg --print-architecture) \
+    && set +e \
+    && if [ "$ARCH" = "amd64" ]; then \
+         curl -fsSL "https://github.com/avast/retdec/releases/download/v5.0/retdec-v5.0-ubuntu-22.04.tar.xz" \
+              -o /tmp/retdec.tar.xz \
+           && mkdir -p /opt/retdec \
+           && tar -xJf /tmp/retdec.tar.xz -C /opt/retdec --strip-components=1 \
+           && ln -sf /opt/retdec/bin/retdec-decompiler /usr/local/bin/retdec-decompiler \
+           && ln -sf /opt/retdec/bin/retdec-decompiler /usr/local/bin/retdec \
+           && rm /tmp/retdec.tar.xz; \
+       else \
+         echo "retdec: arm64 — skipping pre-built download. Falling back to r2's pdc + ghidra-headless"; \
+       fi; \
+    true
 
 # ── pwndbg (default GDB plugin — heap, vmmap, telescope, ROP) ────────────────
 RUN git clone --depth=1 https://github.com/pwndbg/pwndbg /opt/pwndbg \

@@ -98,6 +98,29 @@ better an honest 4-page writeup than a 1-page checklist.
     Generalise: what pattern should a reader look for next time?
 11. **Notes** — failed paths worth recording, alternative exploit
     routes, mitigation suggestions. Skip if nothing meaningful.
+12. **Appendix: solve metadata** *(optional, ≤6 lines)* — model that
+    found the flag, step count, total cost, sibling models attempted.
+    Only include if the operator asked; default is no appendix.
+
+# Voice and audience
+
+The writeup is for a **learner studying the challenge** — not a log of
+how the agent worked. Write as if a researcher sat down with the
+binary and walked through it. Concretely:
+
+- **Third-person, technique-first.** Replace "the solver discovered at
+  step 25 that ..." with "Disassembly of `checkout()` shows ...".
+- **Do NOT reference solver model names** (`gpt-5.5`, `gpt-5.4-mini`,
+  `codex`, `claude-opus-4-7`, etc.) anywhere in the body of the
+  writeup. The trace events and notes are evidence — quote what they
+  contain, not who recorded them.
+- **Do NOT cite step numbers** in the prose ("step 25's r2 dump…").
+  Quote the actual r2 output instead and let it speak. Step numbers
+  are an internal implementation detail of the agent and confuse the
+  external reader.
+- **No mention of "agent" / "swarm" / "tool call".** The reader is
+  studying the challenge, not the harness. They expect: "running r2
+  with `aaa; pdf @ main` produces:" — not "the agent ran r2 …".
 
 # Style
 
@@ -114,10 +137,13 @@ better an honest 4-page writeup than a 1-page checklist.
   make the trace excerpts self-explaining.
 - Confident, technical voice. No marketing ("we successfully ..."), no
   emojis, no closing summary that repeats TL;DR.
-- Cite step numbers when pointing at a specific moment in the trace
-  (e.g. "step 25's r2 dump revealed ..."). When a sibling solver had a
-  useful note the winner missed, cite the source: "`gpt-5.4-mini`
-  noticed at step 7 that ...".
+- **No implication arrows.** Do not use `⇒` or `=>` to mean
+  "therefore" / "implies" — write the implication out in prose
+  ("NX is disabled, so the stack is executable"), or use a colon, or
+  break it into two sentences. Single-direction arrows (`→`, `->`)
+  are still fine for *control flow* and *chain* notation
+  (`puts@plt → puts@got`, `_start → main`, `0x08048087 → 0x0804809b`)
+  where they substitute for "calls" or "falls through to".
 
 # Hard rules
 
@@ -314,15 +340,24 @@ def _build_user_prompt(
     parts.append("---")
     parts.append("")
     parts.append(
-        "Write the writeup now. Begin with the title. **Reminder of the "
-        "non-negotiables**: every claim must cite trace evidence (quote "
-        "the actual disassembly / decompilation / gdb output / payload "
-        "bytes the solver saw); derive struct layouts from observed "
-        "memory accesses with annotation; show stack/heap diagrams "
-        "where layout matters; explain WHY each step works, not just "
-        "what was sent. Length is fine — be thorough enough that a "
-        "reader can reproduce the exploit from the writeup alone, "
-        "without revisiting this trace."
+        "Write the writeup now. Begin with the title.\n\n"
+        "**Reminder of the non-negotiables**:\n\n"
+        "- Every claim must cite evidence — quote the actual "
+        "disassembly / decompilation / gdb output / payload bytes "
+        "from the trace.\n"
+        "- Derive struct layouts from observed memory accesses with "
+        "annotation; show stack/heap diagrams where layout matters; "
+        "explain WHY each step works, not just what was sent.\n"
+        "- The above trace is the evidence source — do NOT mention "
+        "the solver model, step numbers, 'the agent', or 'swarms' in "
+        "the writeup body. Quote what the trace contains, not who "
+        "recorded it. The writeup is for a researcher studying the "
+        "challenge, not for someone studying our harness.\n"
+        "- Length is fine — be thorough enough that a reader can "
+        "reproduce the exploit from the writeup alone.\n"
+        "- No `⇒` or `=>` arrows for implication — write 'so' / "
+        "'therefore' / a colon instead. Single arrows (`→`, `->`) for "
+        "control flow / chain notation are fine."
     )
     return "\n".join(parts)
 
@@ -376,6 +411,7 @@ async def generate_writeup(
             system=SYSTEM_PROMPT,
             user=user_prompt,
             settings=settings,
+            timeout_s=900,
         )
 
         if not markdown:

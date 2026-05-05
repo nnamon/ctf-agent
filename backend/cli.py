@@ -261,7 +261,7 @@ async def _run_single(
         manual_confirm=getattr(settings, "manual_confirm", False),
         pwncollege_dojos=getattr(settings, "pwncollege_dojos", []) or [],
     )
-    cost_tracker = CostTracker()
+    cost_tracker = CostTracker.for_session(settings)
 
     # Build the multi-env registry. Same shape as the coordinator path —
     # registers `local` per-solver via fork(), shares remote envs (pwn.

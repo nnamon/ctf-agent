@@ -214,7 +214,19 @@ class PwnableTwBackend(Backend):
             nc_m = re.search(r"<code>(nc\s+[^<]+)</code>", desc_html)
             connection_info = nc_m.group(1).strip() if nc_m else ""
 
-            distfiles = re.findall(r'href="?(/static/chall/[^"\'\s>]+)', desc_html)
+            # Distfiles can live in two places on a pwnable.tw entry:
+            #   1. inside <div class="description"> as `/static/chall/<bin>`
+            #   2. inside an adjacent <div class="libc"> as
+            #      `/static/libc/libc_{32,64}.so.6`
+            # Some challenges have only the binary; most that need a
+            # specific glibc ship a libc.so.6 alongside. Match the whole
+            # challenge block (not just the description), and restrict to
+            # the known downloadable subdirs so we don't accidentally
+            # pull stylesheet / avatar URLs. Dedup via dict.fromkeys to
+            # keep the download order stable per page render.
+            distfiles = list(dict.fromkeys(
+                re.findall(r'href="?(/static/(?:chall|libc)/[^"\'\s>]+)', body)
+            ))
 
             stub = {
                 "id": int(cid_str),
