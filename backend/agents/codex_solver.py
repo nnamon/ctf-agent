@@ -627,6 +627,15 @@ class CodexSolver:
             if is_confirmed:
                 self._confirmed = True
                 self._flag = flag
+                # Early-exit the turn-wait. Codex MCP transports have
+                # been observed to hang post-submit, never sending the
+                # `turn/done` notification — without this nudge the
+                # solver awaits forever, the swarm never sees FLAG_FOUND,
+                # and writeup generation is silently dropped. We've
+                # already got everything we need; signal turn completion
+                # so run_until_done_or_gave_up returns FLAG_FOUND on its
+                # next check (lines ~712).
+                self._turn_done.set()
             return display
         elif name == "web_fetch":
             return await do_web_fetch(args.get("url", ""), args.get("method", "GET"), args.get("body", ""))

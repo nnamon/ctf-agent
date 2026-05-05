@@ -280,8 +280,17 @@ async def run_event_loop(
                     f"STATUS: {len(solved_set)} solved, {len(unsolved_set)} unsolved, "
                     f"{len(active)} active swarms. Cost: ${cost_tracker.total_cost_usd:.2f}"
                 )
-                # Only send to coordinator if there's something happening
-                if active or parts:
+                # Send to coordinator if there's something happening OR if
+                # the queue is idle with unsolved work — otherwise the LLM
+                # has no nudge to spawn the next batch when all current
+                # swarms have finished, and the run silently stalls.
+                if active or parts or unsolved_set:
+                    if not active and unsolved_set:
+                        status_line += (
+                            f"\nIDLE — no active swarms but {len(unsolved_set)} "
+                            f"challenges remain. Spawn the next "
+                            f"{deps.max_concurrent_challenges} highest-priority unsolved."
+                        )
                     parts.append(status_line)
                 else:
                     logger.info(f"Event -> coordinator: {status_line}")
