@@ -48,6 +48,14 @@ xxd                Hex dump. xxd file | head, xxd -r to reverse.
 hexdump            Hex dump. hexdump -C file.
 binwalk            Firmware/embedded extraction. binwalk -e file to extract.
 objdump            Disassembly. objdump -d binary (from binutils).
+llvm-objdump       LLVM-based disassembler. Better at exotic archs (RISC-V, ARM
+                   variants, Mach-O). llvm-objdump -d binary,
+                   llvm-objdump --triple=aarch64-linux-gnu -d firmware.
+ndisasm            Netwide disassembler from NASM. Bare-byte x86 disasm — no
+                   ELF parsing required. ndisasm -b 64 shellcode.bin.
+nasm               Netwide assembler. nasm -f elf64 shell.asm -o shell.o.
+peframe            PE static analysis (sections, imports, suspicious strings,
+                   yara matches, AV evasion indicators). peframe sample.exe
 readelf            ELF header info. readelf -a binary.
 nm                 Symbol listing. nm binary.
 upx                UPX unpacker. upx -d packed.exe (works on ELF + PE).
@@ -57,7 +65,17 @@ ghidra-headless    Batch RE via Ghidra's analyzeHeadless. Standard recipe:
                      mkdir /tmp/proj && \
                      ghidra-headless /tmp/proj P -import binary \
                        -postScript ListSymbols.java -overwrite
-                   Full Ghidra at /opt/ghidra; pyghidra also available.
+                   Also available as `ghidra` and `analyzeHeadless`.
+                   Full Ghidra at /opt/ghidra; GHIDRA_INSTALL_DIR is set so
+                   `pyghidra.start()` boots without configuration. From
+                   Python:
+                     import pyghidra
+                     pyghidra.start()
+                     from ghidra.app.decompiler import DecompInterface
+                     with pyghidra.open_program('binary') as api:
+                         d = DecompInterface(); d.openProgram(api.currentProgram)
+                         res = d.decompileFunction(fn, 60, None)
+                         print(res.getDecompiledFunction().getC())
 redress            Go binary metadata + symbol/type recovery (uses goretk/gore lib).
                    redress info binary  /  redress source binary
 patchelf           Modify ELF interpreter / RPATH. patchelf --set-interpreter ./ld.so bin
@@ -65,7 +83,18 @@ yara               Pattern matcher (CLI). yara rules.yar target/ -r
                    Ruleset preloaded at /opt/yara-rules/.
 
 == DECOMPILERS ==
-ghidra-headless    See BINARY ANALYSIS. analyzeHeadless ... -postScript Decompile.java
+ghidra / ghidra-headless
+                   See BINARY ANALYSIS. analyzeHeadless ... -postScript Decompile.java.
+                   Also via pyghidra (GHIDRA_INSTALL_DIR is set).
+r2 + r2ghidra      radare2 with the Ghidra plugin loaded. From inside r2:
+                     r2 ./binary
+                     [0x...]> aaa            (analyse all)
+                     [0x...]> pdg @ main     (Ghidra-quality decompile)
+                   One-shot: r2 -qc 'aaa; pdg @ main' ./binary
+                   Falls back to r2's native `pdc` if r2ghidra isn't built.
+retdec             Open-source LLVM-based decompiler (amd64 sandboxes only).
+                     retdec-decompiler binary -o out.c
+                   On arm64 sandboxes use ghidra-headless or r2 pdg instead.
 ilspycmd           .NET decompiler. ilspycmd app.dll -o out/   (or -lv 8.0 etc.)
 jadx               Java/APK decompiler. jadx -d out/ app.jar / app.apk
                    GUI variant available as jadx-gui (X required).
@@ -247,6 +276,13 @@ composer           PHP dependency manager. composer install, composer require <p
 jq                 JSON processor. cat file.json | jq '.key'
 nodejs / npm       JavaScript runtime + package manager. node script.js
 sqlite3            SQLite CLI. sqlite3 file.db '.dump'
+rg (ripgrep)       Fast recursive grep, .gitignore-aware. rg pattern path/
+                   rg -t py 'class.*:' src/   (filter by language)
+                   rg -B2 -A5 pattern         (lines of context)
+                   rg --files-with-matches    (list files only, like `grep -l`)
+python / python3   Both names point to Python 3 (python-is-python3 installed).
+                   Python 3.10 is the system base; `python3.12` available via
+                   the uv-managed standalone build at /opt/uv-pythons/.
 
 == SOURCE CODE REVIEW ==
 semgrep            Pattern-based SAST across 30+ languages.
@@ -336,6 +372,16 @@ qemu-*-static      Run foreign-arch Linux ELFs directly. One static binary per
                      qemu-arm-static     ./binary   (32-bit ARM, e.g. IoT)
                      qemu-riscv64-static ./binary   (RISC-V)
                      qemu-i386-static    ./binary   (32-bit x86)
+                   The `-static` suffix is optional — `qemu-i386 ./binary`,
+                   `qemu-arm ./binary`, etc. are aliased to the static
+                   variants for ergonomic invocation.
+                   i386 sysroot: /opt/i386-sysroot is populated with
+                   libc6:i386 + libstdc++6:i386 etc., and QEMU_LD_PREFIX
+                   points there. Dynamically-linked 32-bit x86 ELFs (most
+                   pwnable.tw / picoCTF / wargame binaries) Just Work via
+                   `qemu-i386-static ./binary` with no -L flag needed. The
+                   challenge-shipped libc.so.6 (when present in distfiles)
+                   takes precedence; for ROP / one_gadget, use that one.
                    Cross-arch GDB: `qemu-x86_64-static -g 1234 ./binary`,
                    then in another shell: `gdb-multiarch ./binary`,
                    `target remote :1234`. Strace works the same way.
@@ -363,7 +409,9 @@ wine / wine64      Run Windows PE binaries. wine64 file.exe (x86_64 PE),
 - Services on the host are reachable via host.docker.internal (bridge networking).
 - RsaCtfTool is at /opt/RsaCtfTool/
 - CADO-NFS is at /opt/cado-nfs/
-- Ghidra is at /opt/ghidra/  (use ghidra-headless for batch jobs)
+- Ghidra is at /opt/ghidra/  (use ghidra / ghidra-headless / analyzeHeadless
+  for batch jobs; pyghidra works out of the box — GHIDRA_INSTALL_DIR is set)
+- i386 sysroot at /opt/i386-sysroot/  (32-bit ELFs Just Work via qemu-i386)
 - pwndbg is at /opt/pwndbg/, gef.py at /opt/gef.py
 - YARA rules at /opt/yara-rules/, jwt_tool at /opt/jwt_tool/
 - ysoserial.jar at /opt/ysoserial.jar, ysoserial-net at /opt/ysoserial-net/
