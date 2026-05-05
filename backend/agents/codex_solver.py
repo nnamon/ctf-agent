@@ -685,7 +685,20 @@ class CodexSolver:
                 "outputSchema": solver_output_json_schema(),
             })
 
-            await self._turn_done.wait()
+            # Bounded turn-wait. Codex MCP transport sometimes never
+            # sends `turn/end` (observed pattern: gpt-5.5 with deep
+            # reasoning, or post-submit hangs). Without a timeout the
+            # solver wedges indefinitely at step=0, blocking the swarm
+            # slot. 600s is generous — typical turns complete in 30-90s
+            # but burst reasoning can hit 5+ min.
+            try:
+                await asyncio.wait_for(self._turn_done.wait(), timeout=600)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[%s] turn wait timed out after 600s; treating as turn_error",
+                    self.agent_name,
+                )
+                self._turn_error = "turn_timeout: codex transport never sent turn/end"
 
             duration = time.monotonic() - t0
             self.tracer.event("turn_complete", duration=round(duration, 1), steps=self._step_count)

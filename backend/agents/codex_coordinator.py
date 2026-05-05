@@ -207,9 +207,14 @@ class CodexCoordinator:
         })
 
         try:
-            await asyncio.wait_for(self._turn_done.wait(), timeout=120)
+            # 600s timeout — gpt-5.5 reasoning passes through
+            # check_swarm_status → read_solver_trace → bump_agent /
+            # kill_solver decision trees can take 3-5+ min. The
+            # previous 120s cap silently abandoned mid-turn tool
+            # calls, leaving stuck-detection signals unfollowed-up.
+            await asyncio.wait_for(self._turn_done.wait(), timeout=600)
         except TimeoutError:
-            logger.warning("Codex coordinator turn timed out")
+            logger.warning("Codex coordinator turn timed out (600s)")
 
         if self._turn_error:
             logger.warning(f"Codex coordinator turn error: {self._turn_error}")
