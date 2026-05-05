@@ -24,14 +24,21 @@ if TYPE_CHECKING:
     from backend.backends import Backend
     from backend.exec_env import EnvRegistry, ExecEnv
 
-MAX_OUTPUT = 24_000
+# Per-tool-result content cap. The LLM sees the truncated payload as
+# its tool result; the trace JSONL records the same. Tuned so a typical
+# r2 `pdf @ main` of a medium binary, a full ghidra-headless decompile
+# of one function with xrefs, or an objdump -d of a 50-fn binary fits
+# without truncation. Bumping this trades context-window budget for
+# fewer "let me re-query the truncated bit" round-trips — empirically
+# the latter dominates on real CTF challenges.
+MAX_OUTPUT = 64_000
 
 
 def _truncate(text: str, limit: int = MAX_OUTPUT) -> str:
     if len(text) <= limit:
         return text
     lines = text.split("\n")
-    head = "\n".join(lines[:200])
+    head = "\n".join(lines[:400])
     return head[:limit] + f"\n... [truncated — {len(text)} total chars, {len(lines)} lines]"
 
 
@@ -136,8 +143,13 @@ async def do_web_fetch(url: str, method: str = "GET", body: str = "") -> str:
             )
             text = resp.text
             prefix = f"HTTP {resp.status_code} {resp.reason_phrase}\n{'─' * 40}\n"
-            if len(text) > 20_000:
-                text = text[:20_000] + f"\n... [truncated, total {len(resp.text)} bytes]"
+            # Match the bumped MAX_OUTPUT cap so HTML pages aren't more
+            # aggressively truncated than disasm output. CTF web pages
+            # are often boilerplate-heavy with the interesting bit
+            # buried near the bottom; 50k captures most challenge UIs
+            # in full.
+            if len(text) > 50_000:
+                text = text[:50_000] + f"\n... [truncated, total {len(resp.text)} bytes]"
             return prefix + text
     except Exception as e:
         return f"Fetch error: {e}"
