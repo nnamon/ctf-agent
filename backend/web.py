@@ -365,6 +365,30 @@ pre.log {
 }
 
 /* Structured trace renderer (parses each JSONL line into a row) */
+.trace-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px 8px;
+  font-size: 11px;
+  color: var(--md-sys-color-on-surface-variant);
+  flex-wrap: wrap;
+}
+.trace-toolbar .trace-mode-label {
+  font-weight: 500;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+.trace-toolbar .trace-mode-count {
+  font-family: "Roboto Mono", monospace;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--md-sys-color-on-surface-variant);
+  opacity: 0.75;
+}
+.trace-toolbar .trace-toggle { white-space: nowrap; }
 .trace {
   display: flex; flex-direction: column;
   background: var(--md-sys-color-surface-container-lowest);
@@ -373,6 +397,11 @@ pre.log {
   max-height: 360px;
   overflow: auto;
 }
+/* When the trace is in full-mode, give it more screen real estate so
+   the user doesn't fight a 360px viewport scrolling through 1000+
+   events. The .trace-full class is applied by JS when fullLogs has
+   the key, before re-render. */
+.trace.trace-full { max-height: 70vh; }
 .trace-row {
   display: grid;
   grid-template-columns: 64px 96px 1fr;
@@ -998,6 +1027,7 @@ const escapeHTML = s => String(s).replace(/[&<>"']/g,
 // UI state
 let selected = null;                 // currently expanded challenge name (or null)
 const expandedLogs = new Set();      // (challenge, model) log rows to keep open
+const fullLogs = new Set();          // (challenge, model) keys requesting full-trace
 function logKey(chal, model) { return chal + '\\u241F' + model; }
 
 function chip(status) {
@@ -1514,6 +1544,24 @@ function toggleLog(chalEnc, modelEnc) {
   if (latestStatus) renderDetail(latestStatus.challenges);
 }
 
+function toggleFullLog(chal, model) {
+  // Args are the raw (already-HTML-escaped) chal/model strings that
+  // the toolbar's onclick handler interpolates. Decode any HTML
+  // entities the escapeHTML pass introduced so logKey matches the
+  // existing entry in fullLogs / expandedLogs.
+  const dec = (s) => {
+    const tmp = document.createElement('textarea');
+    tmp.innerHTML = s;
+    return tmp.value;
+  };
+  const c = dec(chal);
+  const m = dec(model);
+  const k = logKey(c, m);
+  if (fullLogs.has(k)) fullLogs.delete(k);
+  else fullLogs.add(k);
+  fetchLogInto(k);
+}
+
 // Per-host state so we can:
 //  - skip re-render when the trace content hasn't changed (avoids
 //    DOM thrash from the periodic refresh);
@@ -1528,8 +1576,12 @@ async function fetchLogInto(k) {
   if (i < 0) return;
   const chal = k.substring(0, i);
   const model = k.substring(i + sep.length);
+  // Full-trace mode requests an effectively-unbounded tail; the server
+  // caps at the trace file's actual length, so this is just "give me
+  // everything" with no extra round-trips.
+  const tail = fullLogs.has(k) ? 999999 : 80;
   const r = await fetch(
-    `/api/logs/${encodeURIComponent(chal)}/${encodeURIComponent(model)}?tail=80`);
+    `/api/logs/${encodeURIComponent(chal)}/${encodeURIComponent(model)}?tail=${tail}`);
   const data = await r.json();
   const host = detailHostEl.querySelector(
     `[data-trace-host][data-chal="${CSS.escape(chal)}"][data-model="${CSS.escape(model)}"]`
@@ -1545,8 +1597,10 @@ async function fetchLogInto(k) {
     return;
   }
 
-  // Skip if content unchanged (preserves text selection + scroll position).
-  const sig = data.lines.length + ':' + data.lines[data.lines.length - 1];
+  // Sig includes the current mode so toggling full↔tail forces a re-render
+  // even when the underlying line set hasn't grown.
+  const mode = fullLogs.has(k) ? 'full' : 'tail';
+  const sig = mode + ':' + data.lines.length + ':' + data.lines[data.lines.length - 1];
   if (host.dataset.sig === sig) return;
 
   // Capture scroll state from the existing trace (if any) before replacing.
@@ -1556,7 +1610,23 @@ async function fetchLogInto(k) {
     ? (prevTrace.scrollHeight - prevTrace.scrollTop - prevTrace.clientHeight) < 24
     : false;
 
-  host.innerHTML = renderTrace(data.lines);
+  // Prepend a thin toolbar that shows the current mode + a toggle. The
+  // toggle flips fullLogs[k] and re-fetches; auto-refresh on the 4s
+  // interval respects the chosen mode going forward.
+  const isFull = fullLogs.has(k);
+  const toolbar = `<div class="trace-toolbar">
+    <span class="trace-mode-label">${isFull ? 'showing full trace' : 'showing last 80 events'}
+      <span class="trace-mode-count">· ${data.lines.length} loaded</span></span>
+    <button class="small outlined trace-toggle"
+            onclick="toggleFullLog('${escapeHTML(chal).replace(/'/g, "\\'")}','${escapeHTML(model).replace(/'/g, "\\'")}')">
+      ${isFull ? 'Show last 80' : 'Show full trace'}
+    </button>
+  </div>`;
+  host.innerHTML = toolbar + renderTrace(data.lines);
+  if (isFull) {
+    const traceEl = host.querySelector('.trace');
+    if (traceEl) traceEl.classList.add('trace-full');
+  }
   host.dataset.sig = sig;
   host.dataset.state = 'rendered';
 
