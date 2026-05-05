@@ -169,47 +169,8 @@ class PwnableKrBackend(Backend):
         resp = await client.get("/play.php")
         if resp.status_code != 200:
             raise RuntimeError(f"GET /play.php: HTTP {resp.status_code}")
-        text = resp.text
-
-        # Walk the document linearly. Track the most-recent category
-        # header so we can tag each challenge with its section.
-        out: list[dict[str, Any]] = []
-        cat_matches = list(_CATEGORY_RE.finditer(text))
-        ch_matches = list(_CHALLENGE_RE.finditer(text))
-
-        def _category_for(pos: int) -> str:
-            cur = "uncategorized"
-            for m in cat_matches:
-                if m.start() < pos:
-                    cur = m.group(1).strip()
-                else:
-                    break
-            return cur
-
-        for m in ch_matches:
-            layer_id = int(m.group(1))
-            img_slug = m.group(2)            # e.g. "brain fuck"
-            caption = m.group(3).strip()     # e.g. "brain fuck"
-            slug = _slugify(caption or img_slug)
-            category = _category_for(m.start())
-            stub: dict[str, Any] = {
-                "id": layer_id,
-                "name": slug,
-                "title": caption,
-                "category": category,
-                "value": 0,                  # filled in by detail fetch
-                "solves": 0,                 # filled in by detail fetch
-                "type": "standard",
-                "description": "",           # filled in by detail fetch
-                "connection_info": "",       # filled in by detail fetch
-                "_pwnkr": {
-                    "id": layer_id,
-                    "img_slug": img_slug,
-                },
-            }
-            self._stubs_by_name[slug] = stub
-            out.append(stub)
-        return out
+        self._parse_play_html(resp.text)
+        return list(self._stubs_by_name.values())
 
     async def fetch_all_challenges(self) -> list[dict[str, Any]]:
         """Listing-only — the description / points come from the
@@ -342,42 +303,87 @@ class PwnableKrBackend(Backend):
         return ""
 
     async def fetch_solved_names(self) -> set[str]:
-        """`/rankproc.php?id=<user_id>` returns a comma-separated string
-        of slugs (matching the /img/<slug>.png caption). Map back to our
-        normalised slugs and return the set."""
-        uid = await self._resolve_user_id()
-        if not uid:
-            return set()
+        """Parse the `id='rcorner_solved'` markers on /play.php.
+
+        Logged-in /play.php renders each <figure> with one of two ids:
+          - `rcorner`         — unsolved
+          - `rcorner_solved`  — solved by the current user
+        The figcaption is also wrapped in `[brackets]` for solved
+        entries, so two independent signals confirm the state.
+
+        This approach is much more robust than the original
+        rankproc.php-via-user_id path: pwnable.kr's leaderboard only
+        renders a focused window of users, so accounts at rank > a few
+        thousand fall off the visible page and user_id discovery
+        silently fails. The play.php markers, by contrast, are always
+        present for the logged-in user."""
         await self._ensure_logged_in()
         client = await self._ensure_client()
-        resp = await client.get(
-            f"/rankproc.php?id={uid}",
-            headers={"Referer": f"{self.base_url}/rank.php"},
+        resp = await client.get("/play.php")
+        if resp.status_code != 200:
+            return set()
+        # Use a negative lookahead so `rcorner` doesn't accidentally
+        # match `rcorner_solved`. The img src carries the raw caption
+        # (e.g. "brain fuck"); slugify it to match our kebab-case names.
+        img_slugs = re.findall(
+            r"id='rcorner_solved'[^>]*src='/img/([^']+)\.png'",
+            resp.text,
         )
-        if resp.status_code != 200 or not resp.text:
+        if not img_slugs:
             return set()
-        raw = resp.text.strip().rstrip(",")
-        if not raw:
-            return set()
-        # Need stubs cached so we can remap raw img-slugs → kebab-slugs.
+        # Need stubs cached so we can remap raw img-slugs → our names.
+        # The fetch we just did is the same payload fetch_challenge_stubs
+        # parses, so populate from this response directly to avoid a
+        # second round-trip.
         if not self._stubs_by_name:
-            await self.fetch_challenge_stubs()
+            self._parse_play_html(resp.text)
         img_to_slug = {
             stub["_pwnkr"]["img_slug"]: name
             for name, stub in self._stubs_by_name.items()
         }
         out: set[str] = set()
-        for token in (s.strip() for s in raw.split(",")):
-            if not token:
-                continue
-            if token in img_to_slug:
-                out.add(img_to_slug[token])
+        for img in img_slugs:
+            if img in img_to_slug:
+                out.add(img_to_slug[img])
             else:
-                # Server returns the raw caption ("brain fuck"); fall
-                # back to slugifying directly so a captioning change
-                # doesn't accidentally hide a real solve.
-                out.add(_slugify(token))
+                # Stub cache miss: derive the slug directly so a new
+                # challenge doesn't get silently dropped from the
+                # solved-set on its first appearance.
+                out.add(_slugify(img))
         return out
+
+    def _parse_play_html(self, text: str) -> None:
+        """Populate `_stubs_by_name` from a /play.php response body.
+        Factored out of fetch_challenge_stubs so fetch_solved_names can
+        prime the stub cache from the same fetch — saves a round-trip
+        when we just made the call."""
+        out: list[dict[str, Any]] = []
+        cat_matches = list(_CATEGORY_RE.finditer(text))
+        ch_matches = list(_CHALLENGE_RE.finditer(text))
+
+        def _category_for(pos: int) -> str:
+            cur = "uncategorized"
+            for m in cat_matches:
+                if m.start() < pos:
+                    cur = m.group(1).strip()
+                else:
+                    break
+            return cur
+
+        for m in ch_matches:
+            layer_id = int(m.group(1))
+            img_slug = m.group(2)
+            caption = m.group(3).strip().strip("[]")  # solved entries wrap
+            slug = _slugify(caption or img_slug)
+            stub: dict[str, Any] = {
+                "id": layer_id, "name": slug, "title": caption,
+                "category": _category_for(m.start()),
+                "value": 0, "solves": 0, "type": "standard",
+                "description": "", "connection_info": "",
+                "_pwnkr": {"id": layer_id, "img_slug": img_slug},
+            }
+            self._stubs_by_name[slug] = stub
+            out.append(stub)
 
     # ---------- submission ----------
 
