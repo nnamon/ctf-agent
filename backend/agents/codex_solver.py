@@ -286,6 +286,12 @@ class CodexSolver:
         self._last_tool_call_at: float | None = None
         self._proc_started_at: float | None = None
         self._last_codex_event_at: float | None = None
+        # Codex encrypts reasoning *content* per OpenAI policy, but the
+        # tokenUsage update exposes the reasoning token COUNT. Track the
+        # cumulative count so we can emit a `reasoning_pulse` event each
+        # time it grows — a proxy signal for "model is thinking deeply"
+        # that's visible to the coordinator via read_solver_trace.
+        self._reasoning_tokens_seen: int = 0
 
     async def start(self) -> None:
         await self.sandbox.start()
@@ -635,6 +641,21 @@ class CodexSolver:
                     cache_read_tokens=last.get("cachedInputTokens", 0),
                     provider_spec="codex",
                 )
+
+                # Surface reasoning growth even though the content is
+                # encrypted by codex. Delta > 0 ⇒ "model is thinking".
+                # Used by the coordinator to distinguish a productive
+                # reasoning loop from a true wedge (no progress at all).
+                total_reasoning = total.get("reasoningOutputTokens", 0) or 0
+                if total_reasoning > self._reasoning_tokens_seen:
+                    delta = total_reasoning - self._reasoning_tokens_seen
+                    self._reasoning_tokens_seen = total_reasoning
+                    self.tracer.event(
+                        "reasoning_pulse",
+                        delta_tokens=delta,
+                        total_tokens=total_reasoning,
+                        step=self._step_count,
+                    )
                 agent_usage = self.cost_tracker.by_agent.get(self.agent_name)
                 self._cost_usd = agent_usage.cost_usd if agent_usage else 0.0
                 self.tracer.usage(

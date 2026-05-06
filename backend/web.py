@@ -1771,6 +1771,15 @@ function renderTrace(lines) {
         <span class="trace-tag reason">~ reasoning${step}</span>
         <pre class="trace-body">${escapeHTML(shown)}</pre>
       </div>`;
+    } else if (e.type === 'reasoning_pulse') {
+      // Codex encrypts reasoning *content* per OpenAI policy, but we
+      // get the token COUNT — a "still thinking" signal even when the
+      // text isn't readable.
+      html += `<div class="trace-row">
+        <span class="trace-time">${escapeHTML(t)}</span>
+        <span class="trace-tag reason">~ thinking${step}</span>
+        <span class="trace-body">+${e.delta_tokens || 0} reasoning tokens (total ${e.total_tokens || 0})</span>
+      </div>`;
     } else if (e.type === 'codex_stderr') {
       const stext = String(e.text || e.line || '');
       const tooLong = stext.length > 800;

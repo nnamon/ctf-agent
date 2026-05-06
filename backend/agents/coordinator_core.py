@@ -311,6 +311,12 @@ async def do_read_solver_trace(deps: CoordinatorDeps, challenge_name: str, model
                 elif t == "reasoning":
                     rtext = str(d.get("text", ""))[:1500]
                     summary.append(f"step {d.get('step','?')} REASONING: {rtext}")
+                elif t == "reasoning_pulse":
+                    summary.append(
+                        f"step {d.get('step','?')} REASONING_PULSE: "
+                        f"+{d.get('delta_tokens', 0)} tokens "
+                        f"(total {d.get('total_tokens', 0)})"
+                    )
                 elif t == "codex_stderr":
                     summary.append(f"** codex_stderr: {str(d.get('text', d.get('line','')))[:600]}")
                 elif t == "subprocess_exit":
