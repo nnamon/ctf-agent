@@ -986,6 +986,21 @@ pre.log {
         coordinator if you're done.</span>
     </div>
   </div>
+  <!-- Codex/ChatGPT subscription rate-limit banner. Hidden by default;
+       JS adds .show on a `usage_limit_hit` event from the coordinator,
+       removes it on `usage_limit_clear`. Distinct from the cost quota
+       — this is the upstream ChatGPT 5h rolling window. -->
+  <div class="quota-banner" id="usage-limit-banner" role="alert">
+    <span class="icon">⏸</span>
+    <div class="body">
+      <span class="strong">Codex usage limit reached.</span>
+      <span id="usage-limit-resets"></span>
+      Coordinator can't spawn swarms until the upstream ChatGPT
+      subscription window resets.
+      <span class="hint">No action needed — the coord retries
+        automatically and will resume once the window opens.</span>
+    </div>
+  </div>
   <div class="col-main">
     <div id="board"></div>
     <div id="detail-host"></div>
@@ -1078,6 +1093,22 @@ function renderHeader(s) {
     quotaWrap.style.display = 'none';
     appBar.classList.remove('quota-warn', 'quota-danger');
     banner.classList.remove('show');
+  }
+
+  // Codex/ChatGPT subscription rate-limit banner — driven by the same
+  // status payload so reconnecting clients see the current state without
+  // waiting for the next event broadcast.
+  const ulBanner = document.getElementById('usage-limit-banner');
+  const ulResets = document.getElementById('usage-limit-resets');
+  const ul = s.usage_limit || {};
+  if (ulBanner) {
+    if (ul.hit) {
+      ulBanner.classList.add('show');
+      if (ulResets) ulResets.textContent = ul.resets_at
+        ? `Resets at ${ul.resets_at}.` : '';
+    } else {
+      ulBanner.classList.remove('show');
+    }
   }
 
   // "Now solving" status line — chips for every running swarm.
@@ -1490,6 +1521,20 @@ async function toggleWriteup(nameEnc) {
 }
 
 function appendEvent(e) {
+  // Side-effect: codex/ChatGPT subscription rate-limit banner toggle.
+  // Mirrors the cost-quota banner (.show class) so a single visual
+  // language covers both kinds of upstream cap.
+  if (e.kind === 'usage_limit_hit') {
+    const banner = document.getElementById('usage-limit-banner');
+    const resets = document.getElementById('usage-limit-resets');
+    if (banner) banner.classList.add('show');
+    if (resets) resets.textContent = e.resets_at
+      ? `Resets at ${e.resets_at}.` : '';
+  } else if (e.kind === 'usage_limit_clear') {
+    const banner = document.getElementById('usage-limit-banner');
+    if (banner) banner.classList.remove('show');
+  }
+
   const cls = e.kind && (e.kind.includes('error') || e.kind === 'swarm_killed') ? 'err'
             : (e.kind && (e.kind.includes('correct') || e.kind === 'swarm_finished') ? 'ok' : '');
   const t = new Date(e.ts * 1000).toLocaleTimeString();
@@ -1978,6 +2023,8 @@ def _build_status(deps: Any, run_id: str) -> dict:
             "total_usd": deps.cost_tracker.total_cost_usd,
             "total_tokens": deps.cost_tracker.total_tokens,
         },
+        "usage_limit": getattr(deps, "usage_limit",
+            {"hit": False, "resets_at": "", "message": ""}),
         # Renamed from `swarms` to `challenges` since we now list every
         # known challenge regardless of whether a swarm has spawned for it.
         "challenges": challenges_out,

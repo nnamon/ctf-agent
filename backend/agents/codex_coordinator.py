@@ -6,6 +6,7 @@ import asyncio
 import itertools
 import json
 import logging
+import re
 from typing import Any
 
 from backend.agents.coordinator_core import (
@@ -298,7 +299,42 @@ class CodexCoordinator:
             elif method == "turn/completed":
                 turn = params.get("turn", {})
                 if turn.get("status") == "failed":
-                    self._turn_error = str(turn.get("error", "unknown"))
+                    err = turn.get("error", "unknown")
+                    self._turn_error = str(err)
+                    # Surface ChatGPT-subscription rate-limit hits to the
+                    # dashboard. Mirror what the cost-quota banner does:
+                    # event_hub broadcast carries a resets_at hint (UI
+                    # parses the message text for "try again at HH:MM AM").
+                    if isinstance(err, dict) \
+                            and err.get("codexErrorInfo") == "usageLimitExceeded":
+                        msg = err.get("message", "") or ""
+                        m = re.search(r"try again at\s+([0-9:]+\s*[AaPp][Mm])", msg)
+                        resets_at = m.group(1) if m else ""
+                        self.deps.usage_limit = {
+                            "hit": True,
+                            "resets_at": resets_at,
+                            "message": msg,
+                        }
+                        if self.deps.event_hub:
+                            self.deps.event_hub.broadcast(
+                                "usage_limit_hit",
+                                resets_at=resets_at,
+                                message=msg,
+                                text=f"codex usage limit reached"
+                                     f"{f' — resets {resets_at}' if resets_at else ''}",
+                            )
+                else:
+                    # Successful turn after a rate-limit hit means the
+                    # window reset; clear the banner.
+                    if self.deps.usage_limit.get("hit"):
+                        self.deps.usage_limit = {
+                            "hit": False, "resets_at": "", "message": ""
+                        }
+                        if self.deps.event_hub:
+                            self.deps.event_hub.broadcast(
+                                "usage_limit_clear",
+                                text="codex usage limit cleared",
+                            )
                 self._turn_done.set()
 
     async def _handle_tool_call(self, request_id: int, params: dict) -> None:

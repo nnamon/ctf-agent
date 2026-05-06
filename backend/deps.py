@@ -91,6 +91,14 @@ class CoordinatorDeps:
     # category / point value / solve count.
     poller: Any = None
     challenge_metas: dict[str, Any] = field(default_factory=dict)
+    # ChatGPT-subscription rate-limit state — set by codex_coordinator on
+    # `usageLimitExceeded` turn errors and cleared on the next successful
+    # turn. Surfaced via /api/status so the dashboard can show a banner
+    # parallel to the cost-quota one. Not the same as quota_usd: this
+    # tracks the upstream 5h rolling window, not our $ cap.
+    usage_limit: dict[str, Any] = field(
+        default_factory=lambda: {"hit": False, "resets_at": "", "message": ""}
+    )
     # Multi-env registry shared across all swarms in this coordinator.
     # Populated by run_event_loop when EXEC_ENVS is non-empty / when a
     # platform backend (e.g. pwn.college) implies a remote env. Each
