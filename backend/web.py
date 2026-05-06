@@ -718,33 +718,37 @@ pre.log {
 
 .quota-banner {
   display: none;
-  margin: 0 auto 16px;
+  margin: 0 auto 8px;
   max-width: 1600px;
-  padding: 14px 20px;
-  border-radius: var(--md-shape-md);
+  padding: 6px 12px;
+  border-radius: var(--md-shape-sm);
   background: var(--md-sys-color-error-container);
   color: var(--md-sys-color-on-error-container);
   border: 1px solid var(--md-sys-color-error);
-  font-size: 14px; font-weight: 500;
+  font-size: 12.5px; font-weight: 500;
   display: flex;            /* see :not() below — first 'display' wins is overridden */
   align-items: center;
-  gap: 12px;
-  box-shadow: var(--md-elev-2);
+  gap: 8px;
+  box-shadow: var(--md-elev-1);
+  line-height: 1.3;
 }
 .quota-banner:not(.show) { display: none; }
 .quota-banner .icon {
-  font-size: 20px;
+  font-size: 14px;
   flex-shrink: 0;
   color: var(--md-sys-color-error);
 }
-.quota-banner .body { flex: 1; line-height: 1.4; }
-.quota-banner .body .strong { font-weight: 700; }
+.quota-banner .body {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.quota-banner .body .strong { font-weight: 700; margin-right: 4px; }
+/* Hint kept in DOM for screen readers / hover but hidden visually so the
+   banner stays a single thin line. */
 .quota-banner .body .hint {
-  display: block;
-  margin-top: 4px;
-  font-weight: 400;
-  font-size: 12.5px;
-  opacity: .85;
+  display: none;
 }
 
 /* "Now solving" status line in the top app bar. Renders one chip per
@@ -975,30 +979,24 @@ pre.log {
   <!-- Quota-exhausted banner. Hidden by default; the JS adds .show
        once cost.total_usd >= session.quota_usd. Spans the full main
        width so it's the first thing on screen when the cap is hit. -->
-  <div class="quota-banner" id="quota-banner" role="alert">
+  <div class="quota-banner" id="quota-banner" role="alert"
+       title="No new swarms will spawn. Bump quota_usd in session.yml and reload to continue, or kill the coordinator.">
     <span class="icon">⚠</span>
     <div class="body">
       <span class="strong">Quota exhausted.</span>
       <span id="quota-banner-figures"></span>
-      No new swarms will spawn until the cap is raised.
-      <span class="hint">Bump <code>quota_usd</code> in
-        <code>session.yml</code> and reload to continue, or kill the
-        coordinator if you're done.</span>
     </div>
   </div>
   <!-- Codex/ChatGPT subscription rate-limit banner. Hidden by default;
        JS adds .show on a `usage_limit_hit` event from the coordinator,
        removes it on `usage_limit_clear`. Distinct from the cost quota
        — this is the upstream ChatGPT 5h rolling window. -->
-  <div class="quota-banner" id="usage-limit-banner" role="alert">
+  <div class="quota-banner" id="usage-limit-banner" role="alert"
+       title="Coordinator paused on upstream ChatGPT subscription window — retries automatically.">
     <span class="icon">⏸</span>
     <div class="body">
       <span class="strong">Codex usage limit reached.</span>
       <span id="usage-limit-resets"></span>
-      Coordinator can't spawn swarms until the upstream ChatGPT
-      subscription window resets.
-      <span class="hint">No action needed — the coord retries
-        automatically and will resume once the window opens.</span>
     </div>
   </div>
   <div class="col-main">
