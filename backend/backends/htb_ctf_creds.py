@@ -460,11 +460,27 @@ class HtbCtfCredsBackend(Backend):
     # ---------- VPN sidecar (machine-only) ----------
 
     async def _ensure_vpn_sidecar(self) -> None:
+        """Idempotent. Retries once with a fresh .ovpn if the tunnel
+        fails to come up (covers stale cached config when the event's
+        VPN server rotates)."""
         if self._vpn_container is not None:
             return
+        try:
+            await self._spawn_vpn_with_ovpn(force_refresh=False)
+        except RuntimeError as e:
+            if "tun0 up" not in str(e):
+                raise
+            logger.warning(
+                "VPN tunnel never came up — refetching .ovpn and retrying once (%s)",
+                e,
+            )
+            await self._maybe_stop_vpn_sidecar()
+            await self._spawn_vpn_with_ovpn(force_refresh=True)
+
+    async def _spawn_vpn_with_ovpn(self, *, force_refresh: bool) -> None:
         import aiodocker  # type: ignore
 
-        ovpn = await self._fetch_ovpn()
+        ovpn = await self._fetch_ovpn(force_refresh=force_refresh)
         from backend.sandbox import RUN_ID, COORD_PID, CONTAINER_LABEL, RUN_LABEL, COORD_PID_LABEL
         docker = aiodocker.Docker()
         self._vpn_container_name = f"ctf-creds-vpn-{RUN_ID[:12]}"
@@ -529,9 +545,15 @@ class HtbCtfCredsBackend(Backend):
         self._vpn_container = None
         self._vpn_container_name = ""
 
-    async def _fetch_ovpn(self) -> Any:
+    async def _fetch_ovpn(self, force_refresh: bool = False) -> Any:
         from pathlib import Path
         cache = Path.home() / ".ctf-agent" / f"htb-ctf-{self.event_id}.ovpn"
+        if force_refresh and cache.exists():
+            try:
+                cache.unlink()
+                logger.info("HTB creds: forced .ovpn refresh — old cache removed")
+            except OSError as e:
+                logger.warning("HTB creds: couldn't unlink stale .ovpn (%s)", e)
         if cache.exists() and cache.stat().st_size > 100:
             return cache
         servers = await self._get_json("/api/ctfs/vpn-servers")

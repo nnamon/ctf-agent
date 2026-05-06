@@ -408,11 +408,20 @@ class HtbMachinesBackend(Backend):
 
     # ---------- VPN sidecar lifecycle ----------
 
-    async def _fetch_ovpn(self) -> Path:
+    async def _fetch_ovpn(self, force_refresh: bool = False) -> Path:
         """GET /access/ovpnfile/{server_id}/0 → cached .ovpn file.
 
         server_id 0 → resolve via /connections/servers `assigned` field.
+        force_refresh=True bypasses the disk cache and re-downloads —
+        used by the sidecar bring-up retry path when an existing config
+        is suspected stale (e.g. server moved, server_id rotated).
         """
+        if force_refresh and self.ovpn_path.exists():
+            try:
+                self.ovpn_path.unlink()
+                logger.info("HTB: forced .ovpn refresh — old cache removed")
+            except OSError as e:
+                logger.warning("HTB: couldn't unlink stale .ovpn (%s)", e)
         if self.ovpn_path.exists() and self.ovpn_path.stat().st_size > 100:
             return self.ovpn_path
 
@@ -445,14 +454,30 @@ class HtbMachinesBackend(Backend):
     async def _start_vpn_sidecar(self) -> None:
         """Spawn an openvpn sidecar that solver containers can attach to.
 
-        Idempotent: returns immediately if already running.
-        """
+        Idempotent: returns immediately if already running. Retries
+        once with a freshly-downloaded .ovpn if the tunnel fails to
+        come up — covers the case where the cached config is stale
+        (HTB rotated the server, account changed, etc.)."""
         if self._vpn_container is not None:
             return
+        try:
+            await self._spawn_vpn_with_ovpn(force_refresh=False)
+        except RuntimeError as e:
+            if "tun0 up" not in str(e):
+                raise
+            logger.warning(
+                "VPN tunnel never came up — refetching .ovpn config "
+                "and retrying once (%s)", e,
+            )
+            # Tear down the half-spawned container before the retry
+            # so create_or_replace doesn't see a running stale instance.
+            await self._stop_vpn_sidecar()
+            await self._spawn_vpn_with_ovpn(force_refresh=True)
 
+    async def _spawn_vpn_with_ovpn(self, *, force_refresh: bool) -> None:
         import aiodocker  # type: ignore
 
-        ovpn = await self._fetch_ovpn()
+        ovpn = await self._fetch_ovpn(force_refresh=force_refresh)
         docker = aiodocker.Docker()
         # Distinct name per run, so concurrent ctf-agent invocations
         # don't collide. Solvers reference this in network_mode.
