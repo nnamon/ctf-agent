@@ -1651,11 +1651,18 @@ async function fetchLogInto(k) {
   if (host.dataset.sig === sig) return;
 
   // Capture scroll state from the existing trace (if any) before replacing.
+  // When the user is mid-scroll (not pinned to the bottom), we need to
+  // RESTORE that scrollTop on the freshly-rendered element — otherwise
+  // each 4s tick wipes the DOM and scrollTop snaps back to 0, jerking
+  // the view to the top whenever new lines arrive. The new render has
+  // older content at the same offsets (lines are append-only), so a
+  // verbatim scrollTop restore keeps the user reading the same lines.
   const prevTrace = host.querySelector('.trace');
   const isFirstRender = !prevTrace;
   const wasAtBottom = prevTrace
     ? (prevTrace.scrollHeight - prevTrace.scrollTop - prevTrace.clientHeight) < 24
     : false;
+  const prevScrollTop = prevTrace ? prevTrace.scrollTop : 0;
 
   // Prepend a thin toolbar that shows the current mode + a toggle. The
   // toggle flips fullLogs[k] and re-fetches; auto-refresh on the 4s
@@ -1677,10 +1684,18 @@ async function fetchLogInto(k) {
   host.dataset.sig = sig;
   host.dataset.state = 'rendered';
 
-  // Auto-scroll only when it won't fight the user.
-  if (isFirstRender || wasAtBottom) {
-    const traceEl = host.querySelector('.trace');
-    if (traceEl) traceEl.scrollTop = traceEl.scrollHeight;
+  // Auto-scroll only when it won't fight the user. Three cases:
+  //   1. First render → pin to bottom so the user sees the latest events.
+  //   2. Was at bottom → keep pinned (tail-follow behaviour).
+  //   3. Mid-scroll   → restore prior scrollTop verbatim so the user stays
+  //                     parked on whatever line they were reading.
+  const traceEl = host.querySelector('.trace');
+  if (traceEl) {
+    if (isFirstRender || wasAtBottom) {
+      traceEl.scrollTop = traceEl.scrollHeight;
+    } else {
+      traceEl.scrollTop = prevScrollTop;
+    }
   }
 }
 
