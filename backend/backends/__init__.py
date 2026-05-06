@@ -16,6 +16,7 @@ from pathlib import Path
 from backend.backends.attempt_log import AttemptLogBackend
 from backend.backends.base import Attempt, Backend, SubmitResult
 from backend.backends.ctfd import CTFdBackend, CTFdSessionBackend
+from backend.backends.htb_ctf_creds import HtbCtfCredsBackend
 from backend.backends.htb_ctf_mcp import HtbCtfMcpBackend
 from backend.backends.htb_labs import HtbLabsBackend
 from backend.backends.htb_machines import HtbMachinesBackend
@@ -44,6 +45,9 @@ def make_backend(
     htb_vpn_image: str = "ctf-vpn",
     htb_mcp_token: str = "",
     htb_mcp_event_id: int = 0,
+    htb_creds_xsrf_token: str = "",
+    htb_creds_session: str = "",
+    htb_creds_event_id: int = 0,
 ) -> Backend:
     """Construct a backend by kind, optionally wrapped with decorators.
 
@@ -126,6 +130,13 @@ def make_backend(
             mcp_token=htb_mcp_token,
             event_id=htb_mcp_event_id,
         )
+    elif kind in ("htb-ctf-creds", "htb_ctf_creds", "hackthebox-ctf-creds"):
+        inner = HtbCtfCredsBackend(
+            xsrf_token=htb_creds_xsrf_token,
+            session_cookie=htb_creds_session,
+            event_id=htb_creds_event_id,
+            sidecar_image=htb_vpn_image,
+        )
     elif kind == "local":
         inner = LocalBackend()
     else:
@@ -143,6 +154,7 @@ __all__ = [
     "CTFdBackend", "CTFdSessionBackend", "LocalBackend",
     "PwnCollegeBackend", "PwnableKrBackend", "PwnableTwBackend",
     "HtbLabsBackend", "HtbMachinesBackend", "HtbCtfMcpBackend",
+    "HtbCtfCredsBackend",
     "AttemptLogBackend", "ManualConfirmBackend",
     "make_backend",
 ]

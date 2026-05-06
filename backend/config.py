@@ -129,6 +129,14 @@ class Settings(BaseSettings):
     # at ctf.hackthebox.com/events/<id>.
     htb_mcp_event_id: int = 0
 
+    # ── HackTheBox CTF events (creds backend) params ──
+    # Cookie-import auth for ctf.hackthebox.com. Export from your
+    # browser's DevTools (Application → Cookies → ctf.hackthebox.com):
+    htb_creds_xsrf_token: str = ""    # XSRF-TOKEN cookie, URL-decoded
+    htb_creds_session: str = ""        # htb_session cookie value
+    # CTF event id (same numbering as the MCP backend).
+    htb_creds_event_id: int = 0
+
     # ── Multi-env registry ──
     # Comma-separated env names to register beyond `local` (which is
     # always present). Recognised values: "pwncollege". Auto-set to

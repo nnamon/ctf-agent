@@ -113,6 +113,9 @@ async def _pull(
         htb_vpn_image=getattr(settings, "htb_vpn_image", "ctf-vpn"),
         htb_mcp_token=getattr(settings, "htb_mcp_token", ""),
         htb_mcp_event_id=getattr(settings, "htb_mcp_event_id", 0),
+        htb_creds_xsrf_token=getattr(settings, "htb_creds_xsrf_token", ""),
+        htb_creds_session=getattr(settings, "htb_creds_session", ""),
+        htb_creds_event_id=getattr(settings, "htb_creds_event_id", 0),
     )
 
     try:
