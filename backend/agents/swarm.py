@@ -370,43 +370,15 @@ class ChallengeSwarm:
         return result, solver
 
     async def run(self) -> SolverResult | None:
-        """Run all solvers in parallel. Returns the winner's result or None."""
+        """Run all solvers in parallel. Returns the winner's result or None.
+
+        Per-challenge instance lifecycle (start) is owned by the
+        coordinator (see do_spawn_swarm) — meta.connection_info and
+        settings.sandbox_network_mode are already populated by the time
+        we get here. We only handle teardown (stop_instance + reset
+        the network_mode setting) in the `finally` block.
+        """
         self.started_at = time.time()
-
-        # Per-challenge instance lifecycle. Backends with docker-instanced
-        # challenges (HTB Labs) spawn one per user; sibling solvers in
-        # this swarm share it. start_instance returns the live IP+port to
-        # inject into meta.connection_info; on static-distfile backends
-        # (the default no-op) it returns None and we leave meta alone.
-        try:
-            live_conn = await self.ctfd.start_instance(self.meta.name)
-        except Exception as e:
-            logger.error(
-                f"[{self.meta.name}] start_instance failed: {e} — "
-                "aborting swarm without spawning solvers"
-            )
-            self.finished_at = time.time()
-            return None
-        if live_conn:
-            logger.info(
-                f"[{self.meta.name}] live instance: {live_conn}"
-            )
-            self.meta.connection_info = live_conn
-
-        # If the backend brought up a VPN sidecar (HtbMachinesBackend),
-        # propagate its network_mode to settings so solver sandboxes
-        # attach to the sidecar's namespace at create time. Mutating the
-        # shared Settings is safe here because (a) the field is set
-        # before any solver task spawns, and (b) free-tier HTB only
-        # allows one machine swarm at a time so there's no concurrent
-        # writer. We reset it in `finally` regardless of outcome.
-        backend_netmode = getattr(self.ctfd, "network_mode", "") or ""
-        if backend_netmode:
-            self.settings.sandbox_network_mode = backend_netmode
-            logger.info(
-                f"[{self.meta.name}] solver sandboxes will attach to "
-                f"network_mode={backend_netmode!r}"
-            )
 
         # Stash the per-solver tasks on the swarm so kill() can cancel
         # them later — without this, kill() only flips cancel_event and

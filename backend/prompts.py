@@ -32,6 +32,11 @@ class ChallengeMeta:
     # for example). Carried through verbatim so the orchestrator can read
     # `pwncollege.dojo`/`module`/`challenge` to spawn the workspace.
     backend_meta: dict[str, Any] = field(default_factory=dict)
+    # Names of other challenges that must be solved before this one is
+    # eligible to spawn. The coord refuses spawn_swarm if any prereq is
+    # unsolved. Used by HtbMachinesBackend to gate `<slug>-root` on
+    # `<slug>-user` (root requires the user foothold).
+    prerequisites: list[str] = field(default_factory=list)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> ChallengeMeta:
@@ -58,6 +63,7 @@ class ChallengeMeta:
             solves=data.get("solves", 0),
             primary_env=primary_env,
             backend_meta=backend_meta,
+            prerequisites=list(data.get("prerequisites", []) or []),
         )
 
 

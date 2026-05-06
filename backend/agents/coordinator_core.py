@@ -179,8 +179,55 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
         # challenges; we just nudge the active challenge here so the next
         # tool call from the solver lands in the right container.
         meta = deps.challenge_metas[challenge_name]
+
+        # Prerequisite gating. Backends like HtbMachinesBackend list
+        # `<slug>-user` as a prereq on `<slug>-root` because root.txt
+        # is unreachable without the user foothold. The check happens
+        # here (not in the swarm) so the coord can fail fast and the
+        # capacity slot stays free for something solvable.
+        prereqs = list(getattr(meta, "prerequisites", []) or [])
+        if prereqs:
+            try:
+                solved = await deps.ctfd.fetch_solved_names()
+            except Exception as e:
+                logger.warning("prereq check: fetch_solved_names failed: %s", e)
+                solved = set()
+            unmet = [p for p in prereqs if p not in solved]
+            if unmet:
+                return (
+                    f"Refused: {challenge_name!r} blocked by unmet "
+                    f"prerequisites {unmet!r}. Solve those first."
+                )
+
         if deps.env_registry is not None:
             _bind_challenge_to_envs(deps.env_registry, meta)
+
+        # Per-challenge instance lifecycle, coord-driven. Backends with
+        # docker-instanced challenges (HTB Labs) or VPN-tunnelled VMs
+        # (HTB Machines) spawn a per-user instance here; sibling solvers
+        # in the resulting swarm share it. Static-distfile backends
+        # inherit the no-op default and we leave meta alone.
+        try:
+            live_conn = await deps.ctfd.start_instance(challenge_name)
+        except Exception as e:
+            return (
+                f"start_instance({challenge_name}) failed: {e} — "
+                "swarm not spawned. Check backend / connectivity."
+            )
+        if live_conn:
+            logger.info("[%s] live instance: %s", challenge_name, live_conn)
+            meta.connection_info = live_conn
+            # Propagate VPN sidecar netns to solver sandboxes if the
+            # backend brought one up (HtbMachinesBackend exposes this
+            # via a network_mode property; tier-2 docker-challenges leave
+            # it empty).
+            backend_netmode = getattr(deps.ctfd, "network_mode", "") or ""
+            if backend_netmode:
+                deps.settings.sandbox_network_mode = backend_netmode
+                logger.info(
+                    "[%s] solver sandboxes will use network_mode=%r",
+                    challenge_name, backend_netmode,
+                )
 
         swarm = ChallengeSwarm(
             challenge_dir=deps.challenge_dirs[challenge_name],

@@ -24,22 +24,33 @@ matches the free-tier 1-VPN cap. The sidecar is spawned on
 start_instance and torn down on stop_instance. Solver containers attach
 via Sandbox.network_mode = "container:<sidecar-name>".
 
-# Two-flag limitation (v1)
+# Two-flag handling
 
-HTB machines have *two* flags (user.txt + root.txt). This backend treats
-each machine as one challenge. submit_flag accepts either, classifies
-which one HTB recognised, and reports back. The solver harness exits on
-first-flag-found, so the typical flow is:
+HTB machines have *two* flags (user.txt + root.txt). This backend
+splits each machine into two challenges named `<slug>-user` and
+`<slug>-root`, both linked to the same machine_id internally. The
+existing single-flag-per-challenge harness handles them naturally.
 
-  - Solver finds user.txt → swarm wins → record stops there
-  - To submit root.txt, re-spawn the swarm (the box is destroyed and
-    re-created; you'll have to re-exploit user → root again)
+Spawn lifecycle is ref-counted by machine: the first sibling to call
+start_instance triggers the actual /vm/spawn, both share the resulting
+IP, and the box only terminates when the LAST sibling calls
+stop_instance. Solving user.txt → escalating to root.txt → submitting
+both works in a single sustained session because the foothold persists
+across solver runs of the two halves.
 
-A future commit will add a SubmitResult.status == "partial_correct"
-that lets the solver keep going after user.txt is accepted, sustaining
-the same shell into root.txt without re-spawning. Tracked as a known
-limitation; the v1 backend is still useful for proving the integration
-end-to-end and chewing through user.txt-only solves.
+Prerequisite chain: `<slug>-root` lists `<slug>-user` in its
+metadata.yml `prerequisites`. The coord refuses to spawn root until
+user is owned (do_spawn_swarm guard).
+
+Opportunistic short-circuit: if a solver on `<slug>-user` captures
+root.txt while exploring (common when priv-esc is found early), the
+expected flow is:
+
+  1. Submit user.txt via normal `submit_flag` tool — the swarm wins.
+  2. notify_coordinator with: "Also captured root.txt for <slug>: <flag>".
+  3. Coord LLM parses the message, dispatches submit_flag for the
+     <slug>-root challenge directly (no second swarm spawn needed).
+  4. Both halves marked solved, machine terminates after both swarms end.
 """
 
 from __future__ import annotations
@@ -96,11 +107,19 @@ class HtbMachinesBackend(Backend):
     ovpn_path: Path = field(default=DEFAULT_OVPN_PATH)
 
     _client: httpx.AsyncClient | None = field(default=None, repr=False)
-    # name → machine info dict (id, ip, os, difficulty, free, ...)
+    # challenge-slug ("acute-user", "acute-root") → stub dict.
     _machines_by_name: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
-    # Currently-active machine slug + spawned IP. Free tier = at most one.
-    _active_machine: str | None = field(default=None, repr=False)
-    _active_ip: str | None = field(default=None, repr=False)
+    # Ref counts of active spawns by machine_slug ("acute"). Each
+    # challenge-slug that called start_instance adds itself to the set;
+    # stop_instance removes itself. The actual /vm/spawn happens on
+    # transition to first ref, /vm/terminate on transition to zero refs.
+    # Free-tier HTB caps total active machines at 1, so this dict has
+    # at most one non-empty entry at a time, but the structure is
+    # cap-agnostic.
+    _spawn_refs: dict[str, set[str]] = field(default_factory=dict, repr=False)
+    # machine_slug → connection_info string from the live spawn (cached
+    # so sibling start_instance calls don't re-hit /machine/profile).
+    _spawn_conn: dict[str, str] = field(default_factory=dict, repr=False)
     # VPN sidecar container handle (aiodocker container object).
     _vpn_container: Any = field(default=None, repr=False)
     _vpn_container_name: str = field(default="", repr=False)
@@ -145,11 +164,11 @@ class HtbMachinesBackend(Backend):
     # ---------- listing ----------
 
     async def fetch_challenge_stubs(self) -> list[dict[str, Any]]:
-        """Walk /machine/paginated, return one stub per active machine.
-
-        Free tier sees ~15 active machines. The `free:true` flag marks
-        which ones the user can spawn without VIP. Retired machines need
-        VIP+ and we skip them.
+        """Walk /machine/paginated, return TWO stubs per active machine
+        — one for user.txt, one for root.txt — both linked to the same
+        machine_id. Each is a normal one-flag-per-challenge stub; the
+        existing harness handles them natively, and the spawn ref-count
+        in start_instance/stop_instance keeps both halves on one box.
         """
         out: list[dict[str, Any]] = []
         page = 1
@@ -168,29 +187,38 @@ class HtbMachinesBackend(Backend):
                 break
             for m in data:
                 name = m.get("name") or ""
-                slug = _slugify(name)
-                stub = {
-                    "id": m.get("id"),
-                    "name": slug,
-                    "title": name,
-                    "category": "Machine",
-                    "value": int(m.get("static_points") or m.get("points") or 0),
-                    "solves": (m.get("user_owns_count") or 0) + (m.get("root_owns_count") or 0),
-                    "type": "standard",
-                    "description": "",  # filled by fetch_all_challenges
-                    "connection_info": "",
-                    "_htb_m": {
-                        "id": m.get("id"),
-                        "os": m.get("os") or "",
-                        "difficulty": m.get("difficultyText") or "",
-                        "free": bool(m.get("free")),
-                        "retired": bool(m.get("retired")),
-                        "user_owned": bool(m.get("authUserInUserOwns")),
-                        "root_owned": bool(m.get("authUserInRootOwns")),
-                    },
+                base_slug = _slugify(name)
+                # Half-points each. HTB awards static_points / 2 for
+                # user.txt, the rest for root.txt. We surface that so
+                # the coord can prioritise high-value boxes.
+                pts = int(m.get("static_points") or m.get("points") or 0)
+                half_pts = pts // 2 if pts > 1 else pts
+                machine_meta = {
+                    "machine_id": m.get("id"),
+                    "machine_slug": base_slug,
+                    "os": m.get("os") or "",
+                    "difficulty": m.get("difficultyText") or "",
+                    "free": bool(m.get("free")),
+                    "retired": bool(m.get("retired")),
+                    "user_owned": bool(m.get("authUserInUserOwns")),
+                    "root_owned": bool(m.get("authUserInRootOwns")),
                 }
-                self._machines_by_name[slug] = stub
-                out.append(stub)
+                for half in ("user", "root"):
+                    slug = f"{base_slug}-{half}"
+                    stub = {
+                        "id": m.get("id"),  # machine_id; same for both halves
+                        "name": slug,
+                        "title": f"{name} ({half}.txt)",
+                        "category": "Machine",
+                        "value": half_pts,
+                        "solves": int(m.get(f"{half}_owns_count") or 0),
+                        "type": "standard",
+                        "description": "",
+                        "connection_info": "",
+                        "_htb_m": {**machine_meta, "half": half},
+                    }
+                    self._machines_by_name[slug] = stub
+                    out.append(stub)
             meta = body.get("meta") or {}
             if page >= meta.get("last_page", page):
                 break
@@ -198,13 +226,21 @@ class HtbMachinesBackend(Backend):
         return out
 
     async def fetch_all_challenges(self) -> list[dict[str, Any]]:
-        """Stubs + per-machine /profile (description, maker, release date)."""
+        """Stubs + per-machine /profile (description, maker, release).
+
+        Profiles are fetched once per machine_id (not per half) — both
+        sibling stubs share the same description otherwise we'd double
+        the rate-limit cost.
+        """
         stubs = await self.fetch_challenge_stubs()
+        profiles_by_id: dict[int, dict[str, Any]] = {}
         out: list[dict[str, Any]] = []
         for stub in stubs:
-            mid = stub["_htb_m"]["id"]
-            info = await self._fetch_profile(mid)
-            stub["description"] = self._render_profile_description(info)
+            mid = stub["_htb_m"]["machine_id"]
+            if mid not in profiles_by_id:
+                profiles_by_id[mid] = await self._fetch_profile(mid)
+            info = profiles_by_id[mid]
+            stub["description"] = self._render_profile_description(info, stub["_htb_m"]["half"])
             stub["_htb_m"]["release"] = info.get("release") or ""
             stub["_htb_m"]["maker"] = (info.get("maker") or {}).get("name", "")
             out.append(stub)
@@ -217,47 +253,87 @@ class HtbMachinesBackend(Backend):
             return {}
         return resp.json().get("info", {})
 
-    def _render_profile_description(self, info: dict[str, Any]) -> str:
+    def _render_profile_description(self, info: dict[str, Any], half: str) -> str:
+        """Per-half brief. The user half explains the foothold flow;
+        the root half adds the prerequisite warning + sibling-flag
+        opportunistic-submit hint."""
         os_ = info.get("os", "")
         diff = info.get("difficultyText") or ""
         maker = (info.get("maker") or {}).get("name", "")
-        return (
-            f"HackTheBox machine ({os_}, {diff}, by {maker}).\n\n"
-            f"Two flags to capture: `user.txt` (in the user home) and "
-            f"`root.txt` (in /root or C:\\Users\\Administrator\\Desktop).\n\n"
-            f"Submit either flag via the standard `submit_flag` tool — "
-            f"the backend will tell you which one HTB recognised. v1 of "
-            f"this integration ends the swarm on first-flag-accepted; "
-            f"if you want both, submit `user.txt` first, then re-spawn "
-            f"to chase `root.txt`."
+        name = info.get("name", "this machine")
+        common = (
+            f"HackTheBox machine **{name}** ({os_}, {diff}, by {maker}).\n\n"
+            f"Reachable only over OpenVPN at the IP the coordinator passes "
+            f"in `connection_info`. Standard recon flow: nmap → enumerate "
+            f"services → identify exploitable vector → land a shell.\n\n"
         )
+        if half == "user":
+            return common + (
+                f"**Goal: capture `user.txt`** (typically `/home/<user>/user.txt` "
+                f"on Linux or `C:\\Users\\<user>\\Desktop\\user.txt` on Windows). "
+                f"Submit it via the standard `submit_flag` tool.\n\n"
+                f"**Bonus: opportunistic `root.txt`.** Many boxes admit a "
+                f"priv-esc path that lands a root shell quickly once you have "
+                f"the user foothold — if you happen to capture `root.txt` "
+                f"as well during exploration, submit `user.txt` first, then "
+                f"send a `notify_coordinator` message:\n\n"
+                f"> Also captured root.txt for `{_slugify(name)}`: <flag-value>\n\n"
+                f"The coordinator will dispatch the root submission directly "
+                f"without spinning up a second swarm."
+            )
+        else:  # root
+            return common + (
+                f"**Goal: capture `root.txt`** (typically `/root/root.txt` on "
+                f"Linux or `C:\\Users\\Administrator\\Desktop\\root.txt` on "
+                f"Windows). Submit it via the standard `submit_flag` tool.\n\n"
+                f"**Prerequisite: `{_slugify(name)}-user` must be solved first.** "
+                f"The coord refuses to spawn this swarm until user.txt is owned. "
+                f"By the time you're running, you have a confirmed user-shell "
+                f"path documented in the prior swarm's writeup — re-establish "
+                f"foothold, then escalate."
+            )
 
     async def fetch_solved_names(self) -> set[str]:
-        """A machine is 'solved' for poller purposes when BOTH flags are
-        owned. Half-owned (user but not root) still shows in the active
-        list so the swarm can come back for root."""
+        """Each half is solved independently — `<slug>-user` when
+        authUserInUserOwns, `<slug>-root` when authUserInRootOwns.
+        The poller surfaces them as separate solved entries."""
         if not self._machines_by_name:
             await self.fetch_challenge_stubs()
-        return {
-            name for name, stub in self._machines_by_name.items()
-            if stub["_htb_m"].get("user_owned") and stub["_htb_m"].get("root_owned")
-        }
+        solved: set[str] = set()
+        for slug, stub in self._machines_by_name.items():
+            half = stub["_htb_m"].get("half")
+            if half == "user" and stub["_htb_m"].get("user_owned"):
+                solved.add(slug)
+            elif half == "root" and stub["_htb_m"].get("root_owned"):
+                solved.add(slug)
+        return solved
 
     # ---------- submission ----------
 
     async def submit_flag(self, challenge_name: str, flag: str) -> SubmitResult:
         """POST /machine/own with {id, flag, difficulty}.
 
-        HTB classifies the flag as user.txt or root.txt by content
-        (each box has unique 32-char hex flags baked in). Response
-        message indicates which side was accepted.
+        challenge_name is the half-suffixed slug (`<slug>-user` or
+        `<slug>-root`). HTB itself classifies the flag's content (each
+        box has a unique 32-char hex flag baked in for each side); we
+        cross-check that the side HTB accepted matches the side the
+        challenge name asked for.
+
+        If a solver running on `-user` accidentally submits the root
+        flag (or vice versa), the response is `incorrect` from the
+        backend's perspective even though HTB technically marked the
+        sibling as owned. The status flips to `already_solved` only on
+        a re-submit because HTB's `authUserInRootOwns` flips on the
+        first accepted submission. The coord layer should pull a fresh
+        fetch_solved_names afterwards to pick up the side-effect.
         """
         if challenge_name not in self._machines_by_name:
             await self.fetch_challenge_stubs()
         stub = self._machines_by_name.get(challenge_name)
         if stub is None:
             raise RuntimeError(f"HTB machine {challenge_name!r} not found")
-        mid = stub["_htb_m"]["id"]
+        mid = stub["_htb_m"]["machine_id"]
+        expected_half = stub["_htb_m"]["half"]
 
         resp = await self._request(
             "POST", "/machine/own",
@@ -273,16 +349,35 @@ class HtbMachinesBackend(Backend):
         msg = (body.get("message") or "").strip()
         success = bool(body.get("success"))
         msg_lower = msg.lower()
+
         if "already" in msg_lower and ("owned" in msg_lower or "submitted" in msg_lower):
             return SubmitResult(
                 "already_solved", msg,
                 f'ALREADY OWNED — flag previously accepted by HTB ({msg})',
             )
         if success:
-            which = "user.txt" if "user" in msg_lower else "root.txt" if "root" in msg_lower else "flag"
+            # HTB's response says which half it credited. If it doesn't
+            # match what the challenge expected, the flag landed on the
+            # sibling — surface that explicitly so the coord knows to
+            # re-poll solved-names rather than mark THIS challenge done.
+            accepted = (
+                "user" if "user" in msg_lower
+                else "root" if "root" in msg_lower
+                else expected_half  # fall through if HTB ever changes wording
+            )
+            if accepted != expected_half:
+                sibling = f"{stub['_htb_m']['machine_slug']}-{accepted}"
+                return SubmitResult(
+                    "incorrect", msg,
+                    f'WRONG-HALF — submission accepted as `{accepted}.txt`, '
+                    f'which credits the `{sibling}` challenge instead of '
+                    f'`{challenge_name}`. The sibling is now solved on HTB; '
+                    f'no further action needed for it. This challenge still '
+                    f'wants its own `{expected_half}.txt`.',
+                )
             return SubmitResult(
                 "correct", msg,
-                f'CORRECT — {which} accepted on HTB ({msg})',
+                f'CORRECT — {accepted}.txt accepted on HTB ({msg})',
             )
         return SubmitResult(
             "incorrect", msg or "rejected",
@@ -422,28 +517,55 @@ class HtbMachinesBackend(Backend):
     # ---------- machine spawn lifecycle ----------
 
     async def start_instance(self, challenge_name: str) -> str | None:
-        """Spawn the machine + bring up VPN. Returns connection_info."""
+        """Spawn the machine + bring up VPN. Returns connection_info.
+
+        Ref-counted by machine_slug: the first sibling (user OR root)
+        triggers /vm/spawn and the VPN sidecar; subsequent siblings
+        share the existing IP. The VPN sidecar persists across both
+        halves' swarms so the foothold survives user → root.
+        """
         if challenge_name not in self._machines_by_name:
             await self.fetch_challenge_stubs()
         stub = self._machines_by_name.get(challenge_name)
         if stub is None:
             raise RuntimeError(f"HTB machine {challenge_name!r} not found")
-        mid = stub["_htb_m"]["id"]
         if not stub["_htb_m"].get("free"):
             raise RuntimeError(
                 f"Machine {challenge_name!r} is not in the free pool — "
                 f"VIP+ subscription required"
             )
+        machine_slug = stub["_htb_m"]["machine_slug"]
+        mid = stub["_htb_m"]["machine_id"]
+
+        # Sibling already running? Share the spawn — just register the ref.
+        if machine_slug in self._spawn_refs and self._spawn_refs[machine_slug]:
+            self._spawn_refs[machine_slug].add(challenge_name)
+            cached = self._spawn_conn.get(machine_slug)
+            if cached:
+                logger.info(
+                    "HTB %s: reusing sibling spawn (refs=%s)",
+                    challenge_name, sorted(self._spawn_refs[machine_slug]),
+                )
+                return cached
+            # No cache yet — fall through to a /profile poll to populate.
+
+        # First ref — actually spawn.
+        self._spawn_refs.setdefault(machine_slug, set()).add(challenge_name)
 
         # 1. VPN first — solver needs the route before the box is reachable.
-        await self._start_vpn_sidecar()
+        try:
+            await self._start_vpn_sidecar()
+        except Exception:
+            self._spawn_refs[machine_slug].discard(challenge_name)
+            raise
 
-        # 2. Spawn the machine. POST /vm/spawn with {machine_id}.
+        # 2. Spawn the machine.
         resp = await self._request(
             "POST", "/vm/spawn", json={"machine_id": mid},
         )
         if resp.status_code != 200:
-            await self._stop_vpn_sidecar()  # don't strand the VPN
+            self._spawn_refs[machine_slug].discard(challenge_name)
+            await self._stop_vpn_sidecar()
             raise RuntimeError(
                 f"vm/spawn({challenge_name}): HTTP {resp.status_code} {resp.text[:200]}"
             )
@@ -468,40 +590,59 @@ class HtbMachinesBackend(Backend):
                 break
             await asyncio.sleep(5.0)
         if not ip:
+            self._spawn_refs[machine_slug].discard(challenge_name)
             await self.stop_instance(challenge_name)
             raise RuntimeError(
                 f"HTB {challenge_name!r}: machine never became reachable in 180s"
             )
 
-        self._active_machine = challenge_name
-        self._active_ip = ip
         os_ = stub["_htb_m"].get("os", "?")
-        return f"{ip}  (HTB machine, {os_} — scan with `nmap -sCV {ip}`)"
+        conn = f"{ip}  (HTB machine, {os_} — scan with `nmap -sCV {ip}`)"
+        self._spawn_conn[machine_slug] = conn
+        return conn
 
     async def stop_instance(self, challenge_name: str) -> None:
-        """Terminate machine via POST /vm/terminate + tear down VPN."""
+        """Decrement ref-count for this challenge. Last sibling out
+        terminates the machine via /vm/terminate AND tears down the
+        VPN sidecar; earlier siblings just release their ref so the
+        partner half still sees the box up."""
         stub = self._machines_by_name.get(challenge_name)
-        if stub:
-            mid = stub["_htb_m"]["id"]
-            try:
-                resp = await self._request(
-                    "POST", "/vm/terminate", json={"machine_id": mid},
-                )
-                if resp.status_code == 200:
-                    logger.info("HTB %s: %s", challenge_name,
-                                resp.json().get("message", "terminated"))
-                else:
-                    logger.warning(
-                        "HTB stop_instance(%s): HTTP %d %s",
-                        challenge_name, resp.status_code, resp.text[:200],
-                    )
-            except Exception as e:
-                logger.warning("HTB vm/terminate failed: %s", e)
+        if stub is None:
+            return
+        machine_slug = stub["_htb_m"]["machine_slug"]
+        refs = self._spawn_refs.get(machine_slug, set())
+        if challenge_name not in refs:
+            return  # never started this one — nothing to do
+        refs.discard(challenge_name)
+        if refs:
+            logger.info(
+                "HTB %s: released ref, %d sibling(s) still running on %s",
+                challenge_name, len(refs), machine_slug,
+            )
+            return
 
-        await self._stop_vpn_sidecar()
-        if self._active_machine == challenge_name:
-            self._active_machine = None
-            self._active_ip = None
+        # Last sibling out — actually terminate.
+        self._spawn_refs.pop(machine_slug, None)
+        self._spawn_conn.pop(machine_slug, None)
+        mid = stub["_htb_m"]["machine_id"]
+        try:
+            resp = await self._request(
+                "POST", "/vm/terminate", json={"machine_id": mid},
+            )
+            if resp.status_code == 200:
+                logger.info("HTB %s: %s", challenge_name,
+                            resp.json().get("message", "terminated"))
+            else:
+                logger.warning(
+                    "HTB stop_instance(%s): HTTP %d %s",
+                    challenge_name, resp.status_code, resp.text[:200],
+                )
+        except Exception as e:
+            logger.warning("HTB vm/terminate failed: %s", e)
+
+        # No machines left → drop VPN.
+        if not self._spawn_refs:
+            await self._stop_vpn_sidecar()
 
     # ---------- pull ----------
 
@@ -520,12 +661,21 @@ class HtbMachinesBackend(Backend):
                 f"pull_challenge: no _htb_m metadata for {challenge.get('name')!r}"
             )
         if not stub.get("description"):
-            info = await self._fetch_profile(stub["_htb_m"]["id"])
-            stub["description"] = self._render_profile_description(info)
+            info = await self._fetch_profile(stub["_htb_m"]["machine_id"])
+            stub["description"] = self._render_profile_description(
+                info, stub["_htb_m"]["half"]
+            )
 
-        slug = _slugify(challenge.get("name") or stub.get("name", "machine"))
+        # The slug here is already half-suffixed (e.g. "acute-user").
+        slug = stub["name"]
         ch_dir = Path(output_dir) / slug
         ch_dir.mkdir(parents=True, exist_ok=True)
+
+        # Root half lists user half as a prerequisite; coord refuses to
+        # spawn `<slug>-root` until `<slug>-user` is solved.
+        prerequisites: list[str] = []
+        if stub["_htb_m"]["half"] == "root":
+            prerequisites = [f"{stub['_htb_m']['machine_slug']}-user"]
 
         meta = {
             "name": stub["name"],
@@ -533,15 +683,18 @@ class HtbMachinesBackend(Backend):
             "category": "Machine",
             "description": stub.get("description", ""),
             "value": stub.get("value", 0),
-            "connection_info": "(spawned at solve time — backend will populate live IP)",
+            "connection_info": "(spawned at solve time — coord will populate live IP)",
             "tags": [
-                "htb", "machine",
+                "htb", "machine", stub["_htb_m"]["half"],
                 stub["_htb_m"].get("os", "").lower(),
                 stub["_htb_m"].get("difficulty", "").lower(),
             ],
             "solves": stub.get("solves", 0),
+            "prerequisites": prerequisites,
             "htb_machine": {
-                "id": stub["_htb_m"]["id"],
+                "id": stub["_htb_m"]["machine_id"],
+                "machine_slug": stub["_htb_m"]["machine_slug"],
+                "half": stub["_htb_m"]["half"],
                 "os": stub["_htb_m"].get("os", ""),
                 "difficulty": stub["_htb_m"].get("difficulty", ""),
                 "free": stub["_htb_m"].get("free", False),
@@ -556,13 +709,14 @@ class HtbMachinesBackend(Backend):
 
     async def close(self) -> None:
         # If a swarm crashed before stop_instance ran, make sure we don't
-        # leak a VPN sidecar or a half-spawned machine.
-        if self._active_machine:
-            try:
-                await self.stop_instance(self._active_machine)
-            except Exception as e:
-                logger.warning("close(): cleanup of %s failed: %s",
-                               self._active_machine, e)
+        # leak a VPN sidecar or a half-spawned machine. Iterate over a
+        # snapshot of refs so the dict can mutate as siblings drain.
+        for slug, refs in list(self._spawn_refs.items()):
+            for chal in list(refs):
+                try:
+                    await self.stop_instance(chal)
+                except Exception as e:
+                    logger.warning("close(): cleanup of %s failed: %s", chal, e)
         await self._stop_vpn_sidecar()
         if self._client is not None:
             try:
