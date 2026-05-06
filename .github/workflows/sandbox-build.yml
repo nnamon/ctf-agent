@@ -24,24 +24,44 @@ on:
 
 env:
   IMAGE: nnamon/ctf-agent
+  VPN_IMAGE: nnamon/ctf-vpn
 
 jobs:
-  # One matrix arm per architecture — each runs on a NATIVE runner so
-  # the build is CPU-bound, not QEMU-bound.
-  #
-  # The dedicated ctf-vpn sidecar image (sandbox/Dockerfile.vpn) is
-  # NOT built here — it's opt-in for users running the HtbMachinesBackend.
-  # Build it locally when needed:
-  #   docker build -f sandbox/Dockerfile.vpn -t ctf-vpn:latest sandbox/
+  # One matrix arm per (image, architecture). Each runs on a NATIVE
+  # runner so the build is CPU-bound, not QEMU-bound. ctf-vpn is the
+  # thin alpine+openvpn sidecar used by HtbMachinesBackend; tiny enough
+  # (~12 MB) that the extra build time is negligible alongside ctf-sandbox.
   build:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: amd64
+          - image: sandbox
+            dockerfile: sandbox/Dockerfile.sandbox
+            image_ref: nnamon/ctf-agent
+            local_tag: ctf-sandbox
+            arch: amd64
             runner: ubuntu-latest
             platform: linux/amd64
-          - arch: arm64
+          - image: sandbox
+            dockerfile: sandbox/Dockerfile.sandbox
+            image_ref: nnamon/ctf-agent
+            local_tag: ctf-sandbox
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+          - image: vpn
+            dockerfile: sandbox/Dockerfile.vpn
+            image_ref: nnamon/ctf-vpn
+            local_tag: ctf-vpn
+            arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+          - image: vpn
+            dockerfile: sandbox/Dockerfile.vpn
+            image_ref: nnamon/ctf-vpn
+            local_tag: ctf-vpn
+            arch: arm64
             runner: ubuntu-24.04-arm
             platform: linux/arm64
     runs-on: ${{ matrix.runner }}
@@ -77,38 +97,44 @@ jobs:
 
       # Build single-arch (native — no QEMU). Load locally so smoke can
       # `docker run` against it; also push by-digest below for the merge.
-      - name: Build (${{ matrix.arch }}, native)
+      - name: Build (${{ matrix.image }}/${{ matrix.arch }}, native)
         id: build
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: sandbox/Dockerfile.sandbox
+          file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
           load: true
-          tags: ctf-sandbox:smoke
-          # Per-arch cache scope so amd64 and arm64 don't churn each
-          # other's gha cache lanes.
-          cache-from: type=gha,scope=${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+          tags: ${{ matrix.local_tag }}:smoke
+          # Per (image, arch) cache scope — independent lanes per pair.
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
 
-      - name: Smoke test (${{ matrix.arch }})
+      - name: Smoke test (${{ matrix.image }}/${{ matrix.arch }})
         run: |
-          docker tag ctf-sandbox:smoke ctf-sandbox:latest
-          ./sandbox/build.sh --no-build
+          docker tag ${{ matrix.local_tag }}:smoke ${{ matrix.local_tag }}:latest
+          if [ "${{ matrix.image }}" = "sandbox" ]; then
+            ./sandbox/build.sh --no-build
+          else
+            # ctf-vpn sidecar: confirm openvpn binary present + reports
+            # a version. Anything beyond a help-string check would need
+            # NET_ADMIN cap which we can't reasonably grant in CI.
+            docker run --rm ${{ matrix.local_tag }}:latest openvpn --version | head -1
+          fi
 
       # Push by-digest so the final job can merge per-arch digests into
       # a single manifest. The digest is content-addressable and
       # arch-tagged via the `index` API on docker buildx imagetools.
-      - name: Push by digest (${{ matrix.arch }})
+      - name: Push by digest (${{ matrix.image }}/${{ matrix.arch }})
         id: push
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: sandbox/Dockerfile.sandbox
+          file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platform }}
-          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=${{ matrix.arch }}
+          outputs: type=image,name=${{ matrix.image_ref }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
 
       - name: Export digest
         id: digest
@@ -123,23 +149,32 @@ jobs:
         if: steps.push.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: digest-${{ matrix.arch }}
+          name: digest-${{ matrix.image }}-${{ matrix.arch }}
           path: /tmp/digests/*
           retention-days: 1
 
-  # Merge per-arch digests into one multi-arch manifest under :latest
-  # and the commit SHA. Cheap (no rebuild) — just composes a manifest
-  # list from already-pushed by-digest images.
+  # Merge per-arch digests into one multi-arch manifest per image. Each
+  # image gets :latest and :<sha> tags. Cheap (no rebuild) — composes
+  # manifest lists from already-pushed by-digest images.
   merge:
     needs: build
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - image: sandbox
+            image_ref: nnamon/ctf-agent
+            artifact_prefix: digest-sandbox-
+          - image: vpn
+            image_ref: nnamon/ctf-vpn
+            artifact_prefix: digest-vpn-
     steps:
-      - name: Download all digests
+      - name: Download digests for ${{ matrix.image }}
         uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
-          pattern: digest-*
+          pattern: ${{ matrix.artifact_prefix }}*
           merge-multiple: true
 
       - name: Set up Buildx
@@ -151,13 +186,13 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Create manifest list and push
+      - name: Create manifest list and push (${{ matrix.image }})
         working-directory: /tmp/digests
         run: |
           docker buildx imagetools create \
-            -t ${{ env.IMAGE }}:latest \
-            -t ${{ env.IMAGE }}:${{ github.sha }} \
-            $(printf '${{ env.IMAGE }}@sha256:%s ' *)
+            -t ${{ matrix.image_ref }}:latest \
+            -t ${{ matrix.image_ref }}:${{ github.sha }} \
+            $(printf '${{ matrix.image_ref }}@sha256:%s ' *)
 
-      - name: Inspect resulting image
-        run: docker buildx imagetools inspect ${{ env.IMAGE }}:latest
+      - name: Inspect resulting image (${{ matrix.image }})
+        run: docker buildx imagetools inspect ${{ matrix.image_ref }}:latest
