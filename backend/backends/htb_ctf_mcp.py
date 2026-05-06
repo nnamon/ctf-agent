@@ -600,9 +600,13 @@ class HtbCtfMcpBackend(Backend):
                     dest = ch_dir / "distfiles" / fname
                     dest.parent.mkdir(exist_ok=True)
                     if not dest.exists():
-                        client = await self._ensure_client()
-                        # Signed URL — short-lived, don't reuse our auth header.
-                        async with httpx.AsyncClient(timeout=300.0) as plain:
+                        # Signed URL — short-lived, don't reuse our auth
+                        # header. The signed URL is sometimes minted as
+                        # http:// but redirects to https://; follow the
+                        # redirect rather than failing the fetch.
+                        async with httpx.AsyncClient(
+                            timeout=300.0, follow_redirects=True,
+                        ) as plain:
                             r = await plain.get(url)
                             r.raise_for_status()
                             dest.write_bytes(r.content)
