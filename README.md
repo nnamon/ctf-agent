@@ -70,8 +70,21 @@ or the per-session quota cap is hit.
 ## Quick start
 
 ```bash
-uv sync                                                      # install deps
-docker build -f sandbox/Dockerfile.sandbox -t ctf-sandbox .  # build sandbox
+uv sync                                                            # install deps
+docker pull nnamon/ctf-agent:latest                                # ~8 GB compressed
+docker tag nnamon/ctf-agent:latest ctf-sandbox                     # the runtime expects `ctf-sandbox`
+```
+
+The pre-built multi-arch image (linux/amd64 + linux/arm64) is published on
+every push to main by the `sandbox-build.yml` workflow. Pin to a specific
+build via `nnamon/ctf-agent:<commit-sha>` or `:vX.Y.Z` if you need a
+reproducible artifact.
+
+If you'd rather build the image yourself (e.g. you've patched
+`sandbox/Dockerfile.sandbox` locally):
+
+```bash
+docker build -f sandbox/Dockerfile.sandbox -t ctf-sandbox .        # ~30 min on M1
 ```
 
 Pick a session (one per CTF / engagement) and configure it:

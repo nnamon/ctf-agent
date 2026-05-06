@@ -1,5 +1,17 @@
 # CTF challenge solver sandbox image.
-# Build once: docker build -f Dockerfile.sandbox -t ctf-sandbox .
+#
+# Most users should pull the pre-built multi-arch image instead of
+# building locally — it's ~30 min to build, ~8 GB compressed:
+#
+#   docker pull nnamon/ctf-agent:latest
+#   docker tag nnamon/ctf-agent:latest ctf-sandbox
+#
+# Local build (only if you've modified this file):
+#
+#   docker build -f Dockerfile.sandbox -t ctf-sandbox .
+#
+# CI auto-publishes to Docker Hub on every push to main via
+# .github/workflows/sandbox-build.yml.
 
 FROM ubuntu:22.04
 
