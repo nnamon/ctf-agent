@@ -118,7 +118,7 @@ COORDINATOR_TOOLS = [
     },
     {
         "name": "bump_agent",
-        "description": "Send targeted insights to a stuck agent.",
+        "description": "Send targeted insights to a stuck agent. No-op on swarms whose task has finished — check `task_done` in get_solve_status; if true, spawn fresh or move on.",
         "inputSchema": {
             "type": "object",
             "properties": {

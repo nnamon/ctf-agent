@@ -24,6 +24,11 @@ class SolverResult:
     step_count: int
     cost_usd: float
     log_path: str
+    # Set when the failure cannot be recovered by another turn (e.g. codex
+    # remote-compaction overflowed the model window — the next turn will hit
+    # the same wall). Tells swarm.py to break the run loop immediately
+    # instead of bumping and retrying 3× before the consecutive-error cap.
+    terminal: bool = False
 
 
 class SolverProtocol(Protocol):

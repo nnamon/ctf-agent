@@ -278,6 +278,11 @@ class CodexSolver:
         self._structured_output: dict | None = None
         self._turn_error: str | None = None
         self._compact_requested = False
+        # Set when a turn fails for a reason that won't fix itself on retry
+        # (e.g. codex remote-compaction overflows the model window). Bubbles
+        # up to swarm.py via SolverResult.terminal so the run loop breaks
+        # immediately instead of burning two more retries on the same wall.
+        self._terminal_failure = False
         self._pending_responses: dict[int, asyncio.Future] = {}
         self._reader_task: asyncio.Task | None = None
         self._stderr_task: asyncio.Task | None = None
@@ -650,11 +655,21 @@ class CodexSolver:
                 last = token_usage.get("last", {})
                 total = token_usage.get("total", {})
 
-                # Proactive compaction at 70% context window (only for small-context models like spark)
+                # Proactive compaction. Codex's own pre-sampling compact runs
+                # too late — once the visible-bytes total approaches the
+                # window, the compaction request itself overflows and fails
+                # with context_length_exceeded, wedging the thread. Triggering
+                # at 70% gives the compact request enough headroom.
+                #
+                # Hysteresis: clear the latch once usage drops back under 50%
+                # so we'll re-request if the next round of tool output blows
+                # past the threshold again.
                 context_window = token_usage.get("modelContextWindow")
                 total_tokens = total.get("totalTokens", 0)
-                if context_window and context_window < 200_000 and total_tokens > context_window * 0.7:
-                    if not self._compact_requested:
+                if context_window:
+                    if total_tokens < context_window * 0.5:
+                        self._compact_requested = False
+                    if total_tokens > context_window * 0.7 and not self._compact_requested:
                         self._compact_requested = True
                         logger.info(f"[{self.agent_name}] Requesting compaction ({total_tokens}/{context_window} tokens)")
                         try:
@@ -879,8 +894,12 @@ class CodexSolver:
 
             if self._turn_error:
                 err = self._turn_error.lower()
-                # Context overflow is terminal — don't fallback, just error
+                # Context overflow is terminal — once codex's remote compact
+                # fails with context_length, every subsequent turn hits the
+                # same wall. Mark terminal so swarm.py breaks the run loop
+                # immediately instead of wasting two more bump retries.
                 if "context_length" in err or "context window" in err:
+                    self._terminal_failure = True
                     return self._result(ERROR)
                 if any(k in err for k in ("quota", "rate", "capacity", "usage")):
                     return self._result(QUOTA_ERROR)
@@ -935,6 +954,7 @@ class CodexSolver:
             findings_summary=self._findings[:2000],
             step_count=self._step_count,
             cost_usd=self._cost_usd, log_path=self.tracer.path,
+            terminal=self._terminal_failure,
         )
 
     async def stop(self) -> None:

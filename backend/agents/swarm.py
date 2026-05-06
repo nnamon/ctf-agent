@@ -330,6 +330,15 @@ class ChallengeSwarm:
                         )
                     break
 
+                # Terminal failures (e.g. context_length_exceeded after codex
+                # remote-compaction overflow) won't recover on retry — the
+                # next turn hits the same wall. Skip the 3-strike counter.
+                if result.terminal:
+                    logger.warning(
+                        f"[{self.meta.name}/{model_spec}] Terminal failure — giving up immediately"
+                    )
+                    break
+
                 # Track consecutive errors — stop after 3 in a row
                 if result.status == ERROR:
                     consecutive_errors += 1

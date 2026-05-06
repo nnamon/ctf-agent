@@ -74,11 +74,18 @@ async def do_fetch_challenges(deps: CoordinatorDeps) -> str:
 
 async def do_get_solve_status(deps: CoordinatorDeps) -> str:
     solved = await deps.ctfd.fetch_solved_names()
-    swarm_status = {
-        name: swarm.get_status()
-        for name, swarm in deps.swarms.items()
-        if not _is_skipped(deps, name)
-    }
+    swarm_status = {}
+    for name, swarm in deps.swarms.items():
+        if _is_skipped(deps, name):
+            continue
+        status = swarm.get_status()
+        # Annotate with run-loop liveness so the coordinator LLM can tell
+        # finished swarms apart from running ones. A swarm whose task is
+        # done is a zombie — bump_agent calls against it just stuff insights
+        # into a trace nothing is consuming. Fresh spawn or move on.
+        task = deps.swarm_tasks.get(name)
+        status["task_done"] = task is None or task.done()
+        swarm_status[name] = status
     return json.dumps({"solved": sorted(solved), "active_swarms": swarm_status}, indent=2)
 
 
@@ -271,6 +278,19 @@ async def do_bump_agent(deps: CoordinatorDeps, challenge_name: str, model_spec: 
     swarm = deps.swarms.get(challenge_name)
     if not swarm:
         return f"No swarm running for {challenge_name}"
+    # Refuse to bump a zombie. A swarm whose task has ended (consecutive
+    # errors, terminal context overflow, sibling won) keeps its solver
+    # objects around for the dashboard, but solver.bump() just buffers
+    # insights nothing is going to read. Without this guard the coord LLM
+    # spent ~25 min crafting recovery insights for a wedged hitcon-ftp
+    # solver (2026-05-06), burning reasoning tokens on a no-op.
+    task = deps.swarm_tasks.get(challenge_name)
+    if task is None or task.done():
+        return (
+            f"Swarm for {challenge_name!r} has finished — bump_agent is a "
+            f"no-op. Spawn a fresh swarm if you want another attempt, or "
+            f"move on to a different challenge."
+        )
     solver = swarm.solvers.get(model_spec)
     if not solver:
         return f"No solver for {model_spec} in {challenge_name}"
