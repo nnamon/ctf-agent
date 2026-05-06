@@ -270,11 +270,17 @@ class HtbLabsBackend(Backend):
         success = bool(body.get("success"))
         msg_lower = msg.lower()
         if "already" in msg_lower and "owned" in msg_lower:
+            stub["_htb"]["solved"] = True
             return SubmitResult(
                 "already_solved", msg,
                 f'ALREADY SOLVED — "{flag}" was previously accepted',
             )
         if success:
+            # Flip cached solved-flag so a follow-up fetch_solved_names
+            # reflects the new state without waiting for the poller's
+            # next /list refresh — important when the coord uses solved
+            # state for prerequisite gating or skip filtering.
+            stub["_htb"]["solved"] = True
             return SubmitResult(
                 "correct", msg or "owned",
                 f'CORRECT — "{flag}" accepted on HTB ({msg})',

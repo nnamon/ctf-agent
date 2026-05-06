@@ -351,6 +351,7 @@ class HtbMachinesBackend(Backend):
         msg_lower = msg.lower()
 
         if "already" in msg_lower and ("owned" in msg_lower or "submitted" in msg_lower):
+            self._mark_owned(stub["_htb_m"]["machine_slug"], expected_half)
             return SubmitResult(
                 "already_solved", msg,
                 f'ALREADY OWNED — flag previously accepted by HTB ({msg})',
@@ -365,8 +366,13 @@ class HtbMachinesBackend(Backend):
                 else "root" if "root" in msg_lower
                 else expected_half  # fall through if HTB ever changes wording
             )
+            machine_slug = stub["_htb_m"]["machine_slug"]
+            # Flip the cached owned-flag for whichever half HTB actually
+            # credited — both stub copies (this challenge AND its
+            # sibling) share machine state, so we mark by half.
+            self._mark_owned(machine_slug, accepted)
             if accepted != expected_half:
-                sibling = f"{stub['_htb_m']['machine_slug']}-{accepted}"
+                sibling = f"{machine_slug}-{accepted}"
                 return SubmitResult(
                     "incorrect", msg,
                     f'WRONG-HALF — submission accepted as `{accepted}.txt`, '
@@ -383,6 +389,22 @@ class HtbMachinesBackend(Backend):
             "incorrect", msg or "rejected",
             f'INCORRECT — flag rejected by HTB ({msg})',
         )
+
+    def _mark_owned(self, machine_slug: str, half: str) -> None:
+        """Flip the cached `<half>_owned` flag on both sibling stubs.
+
+        Both `<slug>-user` and `<slug>-root` cache copies of the same
+        machine-level state (user_owned / root_owned). Without this
+        local update, fetch_solved_names would lag behind /machine/own
+        accepts until the poller's next /paginated refresh — and the
+        coord's prerequisite gating would block `<slug>-root` from
+        spawning even after `<slug>-user` was just submitted.
+        """
+        for sibling_half in ("user", "root"):
+            sibling = f"{machine_slug}-{sibling_half}"
+            sibling_stub = self._machines_by_name.get(sibling)
+            if sibling_stub is not None:
+                sibling_stub["_htb_m"][f"{half}_owned"] = True
 
     # ---------- VPN sidecar lifecycle ----------
 

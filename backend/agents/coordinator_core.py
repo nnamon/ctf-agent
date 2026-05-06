@@ -214,6 +214,8 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
                 f"start_instance({challenge_name}) failed: {e} — "
                 "swarm not spawned. Check backend / connectivity."
             )
+        prev_netmode = getattr(deps.settings, "sandbox_network_mode", "") or ""
+        netmode_was_set = False
         if live_conn:
             logger.info("[%s] live instance: %s", challenge_name, live_conn)
             meta.connection_info = live_conn
@@ -224,47 +226,75 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
             backend_netmode = getattr(deps.ctfd, "network_mode", "") or ""
             if backend_netmode:
                 deps.settings.sandbox_network_mode = backend_netmode
+                netmode_was_set = True
                 logger.info(
                     "[%s] solver sandboxes will use network_mode=%r",
                     challenge_name, backend_netmode,
                 )
 
-        swarm = ChallengeSwarm(
-            challenge_dir=deps.challenge_dirs[challenge_name],
-            meta=meta,
-            ctfd=deps.ctfd,
-            cost_tracker=deps.cost_tracker,
-            settings=deps.settings,
-            model_specs=deps.model_specs,
-            no_submit=deps.no_submit,
-            coordinator_inbox=deps.coordinator_inbox,
-            env_registry=deps.env_registry,
-        )
-        deps.swarms[challenge_name] = swarm
+        # Defensive: if anything between start_instance and task
+        # creation fails (ChallengeSwarm ctor, asyncio.create_task in
+        # rare resource pressure), the swarm's `finally` block never
+        # runs. Without explicit cleanup the spawned instance leaks
+        # AND sandbox_network_mode stays mutated, so the *next* swarm
+        # spawned in this session inherits a stale VPN netns. Wrap the
+        # tail of admission in try/except + roll back on failure.
+        try:
+            swarm = ChallengeSwarm(
+                challenge_dir=deps.challenge_dirs[challenge_name],
+                meta=meta,
+                ctfd=deps.ctfd,
+                cost_tracker=deps.cost_tracker,
+                settings=deps.settings,
+                model_specs=deps.model_specs,
+                no_submit=deps.no_submit,
+                coordinator_inbox=deps.coordinator_inbox,
+                env_registry=deps.env_registry,
+            )
+            deps.swarms[challenge_name] = swarm
 
-        async def _run_and_cleanup() -> None:
-            t0 = time.monotonic()
-            result = await swarm.run()
-            duration_s = time.monotonic() - t0
-            # Flag already submitted/confirmed by solver's submit_fn — just record the result
-            if result and result.status == FLAG_FOUND:
-                deps.results[challenge_name] = {
-                    "flag": result.flag,
-                    "submit": "DRY RUN" if deps.no_submit else "confirmed by solver",
-                }
-                if deps.event_hub:
-                    # Truncated so a long flag doesn't blow up the event panel.
-                    flag_short = (result.flag or "")[:60]
-                    deps.event_hub.broadcast(
-                        "flag_found", challenge=challenge_name,
-                        model=swarm.winner_spec or "?",
-                        text=f"{challenge_name}: {flag_short}",
-                    )
-                if not deps.no_writeup:
-                    await _generate_writeup_for_swarm(swarm, result, deps, duration_s)
+            async def _run_and_cleanup() -> None:
+                t0 = time.monotonic()
+                result = await swarm.run()
+                duration_s = time.monotonic() - t0
+                # Flag already submitted/confirmed by solver's submit_fn — just record the result
+                if result and result.status == FLAG_FOUND:
+                    deps.results[challenge_name] = {
+                        "flag": result.flag,
+                        "submit": "DRY RUN" if deps.no_submit else "confirmed by solver",
+                    }
+                    if deps.event_hub:
+                        # Truncated so a long flag doesn't blow up the event panel.
+                        flag_short = (result.flag or "")[:60]
+                        deps.event_hub.broadcast(
+                            "flag_found", challenge=challenge_name,
+                            model=swarm.winner_spec or "?",
+                            text=f"{challenge_name}: {flag_short}",
+                        )
+                    if not deps.no_writeup:
+                        await _generate_writeup_for_swarm(swarm, result, deps, duration_s)
 
-        task = asyncio.create_task(_run_and_cleanup(), name=f"swarm-{challenge_name}")
-        deps.swarm_tasks[challenge_name] = task
+            task = asyncio.create_task(_run_and_cleanup(), name=f"swarm-{challenge_name}")
+            deps.swarm_tasks[challenge_name] = task
+        except Exception as e:
+            # Roll back: release the per-user instance, restore the
+            # network_mode setting, drop the half-registered swarm.
+            logger.error(
+                "[%s] swarm creation failed after start_instance: %s — "
+                "rolling back instance + network_mode",
+                challenge_name, e,
+            )
+            deps.swarms.pop(challenge_name, None)
+            if netmode_was_set:
+                deps.settings.sandbox_network_mode = prev_netmode
+            try:
+                await deps.ctfd.stop_instance(challenge_name)
+            except Exception as cleanup_err:
+                logger.warning(
+                    "[%s] stop_instance during rollback failed: %s",
+                    challenge_name, cleanup_err,
+                )
+            return f"Swarm setup failed for {challenge_name}: {e}"
         if deps.event_hub:
             deps.event_hub.broadcast(
                 "swarm_spawned", challenge=challenge_name,
