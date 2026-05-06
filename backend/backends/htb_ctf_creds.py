@@ -1,43 +1,34 @@
-"""HackTheBox CTF events backend, talking to ctf.hackthebox.com directly.
+"""HackTheBox CTF events backend, talking to ctf.hackthebox.com via
+its own bearer JWT (audience claim `aud:2`).
 
-Stable fallback for when the MCP server (htb-ctf-mcp) shifts under us
-or for events that haven't opted in to AI participation. Same event
-catalog, same flag submission, same container/machine lifecycle —
-but accessed via the human-facing REST API at /api/* with Laravel
-session cookies + XSRF-TOKEN, not via JSON-RPC over MCP.
+Stable fallback for the htb-ctf-mcp backend. Same event catalog,
+flag submission, container + machine spawn — but accessed via the
+human-facing REST API at /api/* with a Bearer JWT, not via JSON-RPC
+over the MCP server.
 
-# Auth: cookie import (primary) vs programmatic SSO (not implemented)
+# Auth: bearer token (no cookies, no CF clearance)
 
-ctf.hackthebox.com doesn't host its own login form — auth comes from
-HTB's central SSO at account.hackthebox.com via the OAuth-style
-flow (`/sso/redirect` → cross-domain login at account.htb → callback
-with auth code → laravel_session cookie set). Driving that
-programmatically is brittle:
+The CTF events platform issues short-lived (3-day) JWTs scoped with
+audience `aud:2`. These are the tokens the SPA's axios layer attaches
+as `Authorization: Bearer <token>` to every /api/ call. The token
+is the ONLY auth needed — Cloudflare doesn't gate API requests, no
+XSRF/CSRF dance.
 
-  - Anti-bot / Cloudflare challenges on account.hackthebox.com
-  - CSRF tokens rotated between flow steps
-  - JS-driven elements in some login states (TOTP, captcha)
+To extract: log into ctf.hackthebox.com, open DevTools → Network → any
+XHR request to /api/* → Headers → Request Headers → copy the
+`authorization` value (just the JWT, no `Bearer ` prefix).
 
-Cookie import is what this backend supports today. The operator:
-
-  1. Logs into ctf.hackthebox.com via their normal browser
-  2. Opens DevTools → Application → Cookies → ctf.hackthebox.com
-  3. Copies XSRF-TOKEN and htb_session into sessions/<name>/.env:
-        htb_creds_xsrf_token=<XSRF-TOKEN cookie value, URL-decoded>
-        htb_creds_session=<htb_session cookie value>
-  4. Cookies typically last 1-2 days; refresh when 401 starts hitting
-
-A future commit may add `programmatic_login(email, password)` for
-non-MFA accounts where the SSO flow is stable enough to automate.
+Token audiences across the HTB platform:
+  - aud:1 = MCP server  (htb-ctf-mcp backend)
+  - aud:2 = CTF events  (this backend)
+  - aud:5 = Labs        (htb-labs / htb-machines backend)
 
 # VPN-machine support
 
-Some CTF events ship full VMs reachable only over OpenVPN. The
-endpoints exist (`/api/challenges/machines/spawn/`,
-`/api/ctfs/vpn/download/`) and pair with the same VPN sidecar
-mechanism we built for htb-machines. start_instance dispatches based
-on whether a challenge `hasMachine` (VPN-tunnelled) or `hasDocker`
-(plain container).
+CTF events DO support VPN-machine challenges (some events ship full
+VMs reachable only over OpenVPN). start_instance dispatches based on
+hasDocker vs hasMachine. Machine path reuses the ctf-vpn sidecar
+pattern from htb-machines.
 """
 
 from __future__ import annotations
@@ -45,7 +36,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -57,10 +47,7 @@ logger = logging.getLogger(__name__)
 
 
 CTF_HOST = "https://ctf.hackthebox.com"
-USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-)
+USER_AGENT = "ctf-agent/htb-ctf-creds (+httpx)"
 
 
 def _slugify(name: str) -> str:
@@ -72,16 +59,11 @@ def _slugify(name: str) -> str:
 
 @dataclass
 class HtbCtfCredsBackend(Backend):
-    """Cookie-import-driven backend for HTB CTF events."""
+    """Bearer-token-auth backend for HTB CTF events."""
 
-    # Cookie values from the operator's browser session.
-    xsrf_token: str = ""        # URL-decoded XSRF-TOKEN cookie value
-    session_cookie: str = ""    # htb_session cookie value
+    bearer_token: str = ""
     event_id: int = 0
     base_url: str = CTF_HOST
-    # Sidecar image for VPN-tunnelled machine challenges. Default
-    # matches the htb-machines convention; users on older sandbox
-    # builds can override per session.
     sidecar_image: str = "ctf-vpn"
 
     _client: httpx.AsyncClient | None = field(default=None, repr=False)
@@ -89,68 +71,52 @@ class HtbCtfCredsBackend(Backend):
     _categories_by_id: dict[int, str] = field(default_factory=dict, repr=False)
     _team_id: int | None = field(default=None, repr=False)
     _live_containers: dict[str, str] = field(default_factory=dict, repr=False)
-    # VPN sidecar (only spawned when a machine challenge is started).
+    # VPN sidecar (only spawned when a machine challenge starts).
     _vpn_container: Any = field(default=None, repr=False)
     _vpn_container_name: str = field(default="", repr=False)
-    # Ref-counted machine spawns (matches htb-machines pattern; lets
-    # parallel siblings share one VPN tunnel + machine slot).
     _machine_refs: set[str] = field(default_factory=set, repr=False)
 
     # ---------- HTTP plumbing ----------
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
-            if not self.session_cookie or not self.xsrf_token:
+            if not self.bearer_token:
                 raise RuntimeError(
-                    "HtbCtfCredsBackend: both htb_creds_xsrf_token and "
-                    "htb_creds_session are required. Export them from "
-                    "DevTools → Application → Cookies → ctf.hackthebox.com "
-                    "and put them in sessions/<name>/.env. The XSRF-TOKEN "
-                    "value must be URL-decoded (replace %3D with =, etc.)."
+                    "HtbCtfCredsBackend: bearer_token required. From a "
+                    "browser logged into ctf.hackthebox.com → DevTools → "
+                    "Network → any /api/* XHR → Request Headers → copy "
+                    "the value of `authorization` (just the JWT, no "
+                    "`Bearer ` prefix). Put it in sessions/<name>/.env "
+                    "as htb_creds_bearer_token=<token>. The token is "
+                    "good for ~3 days; refresh from a logged-in browser "
+                    "when it expires."
                 )
             if self.event_id <= 0:
                 raise RuntimeError(
                     "HtbCtfCredsBackend: event_id required — set "
                     "htb_creds_event_id in session settings"
                 )
-            cookies = {
-                "XSRF-TOKEN": urllib.parse.quote(self.xsrf_token, safe=""),
-                "htb_session": self.session_cookie,
-            }
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 timeout=60.0,
-                cookies=cookies,
                 headers={
+                    "Authorization": f"Bearer {self.bearer_token}",
                     "User-Agent": USER_AGENT,
                     "Accept": "application/json",
-                    # Laravel CSRF: header value is the URL-decoded cookie value.
-                    "X-XSRF-TOKEN": self.xsrf_token,
-                    "X-Requested-With": "XMLHttpRequest",
-                    "Referer": f"{self.base_url}/",
-                    "Origin": self.base_url,
                 },
             )
         return self._client
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        """One round-trip with auth + retry on transient 5xx. 401 is
-        terminal — surface a clear message about cookie staleness."""
         client = await self._ensure_client()
         backoff = 2.0
         for attempt in range(3):
             resp = await client.request(method, path, **kwargs)
             if resp.status_code == 401:
                 raise RuntimeError(
-                    f"HTB creds: HTTP 401 on {method} {path} — session "
-                    "cookies are stale. Re-export XSRF-TOKEN + htb_session "
-                    "from your browser and update the .env."
-                )
-            if resp.status_code == 419:
-                raise RuntimeError(
-                    f"HTB creds: HTTP 419 on {method} {path} — XSRF token "
-                    "mismatch. The cookie and X-XSRF-TOKEN header drifted; "
-                    "re-export XSRF-TOKEN."
+                    f"HTB creds: HTTP 401 on {method} {path} — bearer "
+                    "token rejected. The JWT may have expired (3-day "
+                    "lifetime); re-export from a logged-in browser."
                 )
             if 500 <= resp.status_code < 600 and attempt < 2:
                 await asyncio.sleep(backoff)
@@ -170,9 +136,8 @@ class HtbCtfCredsBackend(Backend):
     # ---------- one-time setup ----------
 
     async def _ensure_categories(self) -> dict[int, str]:
-        """Hydrate the id → category-name map from the public endpoint
-        (no auth needed but the API path is fine to use either way).
-        Cached for the backend lifetime."""
+        """GET /api/public/challenge-categories → {id: name}. No auth
+        required. Cached for the backend lifetime."""
         if self._categories_by_id:
             return self._categories_by_id
         try:
@@ -183,8 +148,6 @@ class HtbCtfCredsBackend(Backend):
                 "categories will fall back to category_<id>", e,
             )
             return self._categories_by_id
-        # Endpoint shape: either {data: [...]} or [...] depending on Laravel
-        # resource wrapper config — handle both.
         items = body.get("data", body) if isinstance(body, dict) else body
         if isinstance(items, list):
             for c in items:
@@ -209,7 +172,6 @@ class HtbCtfCredsBackend(Backend):
         """
         await self._ensure_categories()
         body = await self._get_json(f"/api/ctfs/{self.event_id}")
-        # The endpoint wraps the event in either `data` or top-level.
         event = body.get("data", body) if isinstance(body, dict) else body
         if not isinstance(event, dict):
             raise RuntimeError(f"HTB creds /api/ctfs/{self.event_id}: unexpected shape {body!r}")
@@ -220,8 +182,6 @@ class HtbCtfCredsBackend(Backend):
             name = c.get("name") or ""
             slug = _slugify(name)
             filename = c.get("filename") or ""
-            has_docker = bool(c.get("hasDocker"))
-            has_machine = bool(c.get("hasMachine"))
             stub = {
                 "id": c.get("id"),
                 "name": slug,
@@ -235,8 +195,8 @@ class HtbCtfCredsBackend(Backend):
                 "_htb_ctf": {
                     "id": c.get("id"),
                     "difficulty": c.get("difficulty") or "",
-                    "has_container": has_docker,
-                    "has_machine": has_machine,
+                    "has_container": bool(c.get("hasDocker")),
+                    "has_machine": bool(c.get("hasMachine")),
                     "has_download": bool(filename),
                     "file_name": filename,
                     "docker_instance_type": c.get("docker_instance_type") or "",
@@ -309,11 +269,10 @@ class HtbCtfCredsBackend(Backend):
     # ---------- per-challenge instance lifecycle ----------
 
     async def start_instance(self, challenge_name: str) -> str | None:
-        """Dispatch to the right spawn endpoint based on what the
-        challenge actually exposes:
-          - hasDocker → POST /api/challenges/containers/start (TCP/HTTP service)
-          - hasMachine → spawn VPN sidecar + POST /api/challenges/machines/spawn/
-          - neither → static challenge, no spawn needed
+        """Dispatch to the right spawn endpoint based on challenge type:
+          - hasDocker → POST /api/challenges/containers/start
+          - hasMachine → spawn VPN sidecar + machines/spawn
+          - neither → static challenge, no spawn
         """
         if challenge_name not in self._challenges_by_name:
             await self.fetch_challenge_stubs()
@@ -343,7 +302,6 @@ class HtbCtfCredsBackend(Backend):
         body = resp.json()
         ip, ports = self._extract_ip_ports(body)
 
-        # Some events provision asynchronously — poll status if not ready.
         deadline = asyncio.get_event_loop().time() + 30.0
         while (not ip or not ports) and asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(2.0)
@@ -371,9 +329,6 @@ class HtbCtfCredsBackend(Backend):
         return conn
 
     async def _start_machine(self, name: str, cid: int, stub: dict[str, Any]) -> str:
-        """VPN-tunnelled machine. Spawns the ctf-vpn sidecar (shared
-        across all machine spawns in this session via ref-count), then
-        POSTs the machine spawn, then polls for IP."""
         await self._ensure_vpn_sidecar()
         self._machine_refs.add(name)
         try:
@@ -384,8 +339,6 @@ class HtbCtfCredsBackend(Backend):
                 raise RuntimeError(
                     f"HTB creds machines/spawn({name}): HTTP {resp.status_code} {resp.text[:200]}"
                 )
-            # Poll machine status. The exact path varies — try the
-            # container-style first, then the connection-status fallback.
             deadline = asyncio.get_event_loop().time() + 180.0
             ip = ""
             while asyncio.get_event_loop().time() < deadline:
@@ -414,8 +367,8 @@ class HtbCtfCredsBackend(Backend):
 
     @staticmethod
     def _extract_ip_ports(body: Any) -> tuple[str, list[int]]:
-        """Same shape as the MCP wrapper — `{hostname, ports[]}` is the
-        primary shape. Fallbacks for schema drift."""
+        """`{hostname, ports[]}` is the primary shape on this API.
+        Fallbacks for schema drift."""
         if not isinstance(body, dict):
             return "", []
         ip = (
@@ -444,9 +397,6 @@ class HtbCtfCredsBackend(Backend):
 
     @staticmethod
     def _extract_machine_ip(body: Any, cid: int) -> str:
-        """Pull the assigned 10.10.x.x for the spawned machine out of
-        connection-status — payload typically has a list of active
-        machines keyed by challenge_id."""
         if not isinstance(body, dict):
             return ""
         data = body.get("data", body)
@@ -485,11 +435,7 @@ class HtbCtfCredsBackend(Backend):
     async def _ensure_vpn_sidecar(self) -> None:
         if self._vpn_container is not None:
             return
-        # Lazy-import — keeps the backend importable in environments
-        # without aiodocker for users who only need static + Docker
-        # challenges and never call _start_machine.
         import aiodocker  # type: ignore
-        from pathlib import Path
 
         ovpn = await self._fetch_ovpn()
         from backend.sandbox import RUN_ID, CONTAINER_LABEL, RUN_LABEL
@@ -560,10 +506,7 @@ class HtbCtfCredsBackend(Backend):
         cache = Path.home() / ".ctf-agent" / f"htb-ctf-{self.event_id}.ovpn"
         if cache.exists() and cache.stat().st_size > 100:
             return cache
-        # First, list servers to pick one. Endpoint is /api/ctfs/vpn-servers.
         servers = await self._get_json("/api/ctfs/vpn-servers")
-        # Take the first server id we can find — operator can override
-        # later if a specific region is required.
         sid: int | None = None
         items = servers.get("data", servers) if isinstance(servers, dict) else servers
         if isinstance(items, list):
@@ -612,8 +555,6 @@ class HtbCtfCredsBackend(Backend):
         ch_dir = Path(output_dir) / slug
         ch_dir.mkdir(parents=True, exist_ok=True)
 
-        # Distfile via /api/challenges/{id}/download (Laravel routes it
-        # differently in some events; fall back gracefully on 404).
         if stub["_htb_ctf"].get("has_download"):
             cid = stub["_htb_ctf"]["id"]
             try:
@@ -675,14 +616,16 @@ class HtbCtfCredsBackend(Backend):
     # ---------- explicit join helper ----------
 
     async def join_event(self) -> str:
-        """POST /api/ctfs/join with team_id. State-changing — the
-        operator runs this once per event before catalog/solve calls
-        succeed (mirrors the htb-ctf-mcp join_event helper)."""
+        """POST /api/ctfs/join with team_id. State-changing — call once
+        per event. Mirrors the htb-ctf-mcp join_event helper."""
         if self._team_id is None:
             teams = await self._get_json("/api/teams/my-teams")
             items = teams.get("data", teams) if isinstance(teams, dict) else teams
             if not isinstance(items, list) or not items:
-                raise RuntimeError("HTB creds: /api/teams/my-teams returned no teams")
+                raise RuntimeError(
+                    "HTB creds: /api/teams/my-teams returned no teams. "
+                    "Create or join a team via the web UI first."
+                )
             self._team_id = int(items[0].get("id"))
         resp = await self._request(
             "POST", "/api/ctfs/join",

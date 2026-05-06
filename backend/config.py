@@ -130,10 +130,12 @@ class Settings(BaseSettings):
     htb_mcp_event_id: int = 0
 
     # ── HackTheBox CTF events (creds backend) params ──
-    # Cookie-import auth for ctf.hackthebox.com. Export from your
-    # browser's DevTools (Application → Cookies → ctf.hackthebox.com):
-    htb_creds_xsrf_token: str = ""    # XSRF-TOKEN cookie, URL-decoded
-    htb_creds_session: str = ""        # htb_session cookie value
+    # Bearer JWT (audience claim aud:2) from a logged-in browser session.
+    # DevTools → Network → any /api/* XHR → Request Headers → copy the
+    # `authorization` value (just the JWT, no `Bearer ` prefix).
+    # Tokens are good for ~3 days; refresh from a logged-in browser
+    # when they expire.
+    htb_creds_bearer_token: str = ""
     # CTF event id (same numbering as the MCP backend).
     htb_creds_event_id: int = 0
 

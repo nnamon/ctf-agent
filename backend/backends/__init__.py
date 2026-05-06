@@ -45,8 +45,7 @@ def make_backend(
     htb_vpn_image: str = "ctf-vpn",
     htb_mcp_token: str = "",
     htb_mcp_event_id: int = 0,
-    htb_creds_xsrf_token: str = "",
-    htb_creds_session: str = "",
+    htb_creds_bearer_token: str = "",
     htb_creds_event_id: int = 0,
 ) -> Backend:
     """Construct a backend by kind, optionally wrapped with decorators.
@@ -132,8 +131,7 @@ def make_backend(
         )
     elif kind in ("htb-ctf-creds", "htb_ctf_creds", "hackthebox-ctf-creds"):
         inner = HtbCtfCredsBackend(
-            xsrf_token=htb_creds_xsrf_token,
-            session_cookie=htb_creds_session,
+            bearer_token=htb_creds_bearer_token,
             event_id=htb_creds_event_id,
             sidecar_image=htb_vpn_image,
         )
