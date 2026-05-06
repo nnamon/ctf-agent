@@ -119,6 +119,16 @@ class Settings(BaseSettings):
     # separate so non-machine solver containers don't carry openvpn.
     htb_vpn_image: str = "ctf-vpn"
 
+    # ── HackTheBox CTF events (MCP backend) params ──
+    # Personal MCP token from app.hackthebox.com → AI Agents → MCP Token.
+    # Audience claim must be `aud:1` with scope `mcp:use`. Distinct from
+    # the labs/machines app token (`aud:5`).
+    htb_mcp_token: str = ""
+    # CTF event id to scope all MCP calls to. Required for the
+    # htb-ctf-mcp backend — find it in the URL when viewing the event
+    # at ctf.hackthebox.com/events/<id>.
+    htb_mcp_event_id: int = 0
+
     # ── Multi-env registry ──
     # Comma-separated env names to register beyond `local` (which is
     # always present). Recognised values: "pwncollege". Auto-set to
