@@ -63,14 +63,42 @@ def _slugify(name: str) -> str:
     return s or "challenge"
 
 
-# HTB CTF event challenge filenames usually carry a category prefix
-# (e.g. "hardware_its_oops_pm.zip", "crypto_dynastic.zip"). The platform
-# doesn't expose category names alongside the numeric category_id, so
-# this is the cleanest signal we have. Fall back to the id otherwise.
+# HTB CTF events return only a numeric `challenge_category_id` — no
+# name table is exposed via MCP. This map was derived empirically from
+# the MCP TryOut event (id 2578) by cross-referencing category_id with
+# challenge filenames. Holds for all current HTB CTF events; new
+# categories that HTB adds will fall through to "category_<id>".
+_CATEGORY_BY_ID: dict[int, str] = {
+    2: "Web",
+    3: "Pwn",
+    4: "Crypto",
+    5: "Reversing",
+    7: "Forensics",
+    8: "Misc",
+    11: "GamePwn",
+    14: "Blockchain",
+    15: "Hardware",
+    16: "Misc",          # often used for sanity-check / welcome challenges
+    21: "ICS",
+    22: "Coding",
+    23: "Secure Coding",
+    24: "AI - ML",
+    25: "OSINT",
+    26: "Mobile",
+    27: "Quantum",
+}
+
+# Filename-based fallback (e.g. "hardware_its_oops_pm.zip"). Used only
+# when challenge_category_id is missing — the id-based mapping above
+# is the authoritative signal because some filenames mislead (a Pwn
+# challenge named "Router Web" has filename "router_web.zip" but
+# category_id 3 = Pwn, not "Router").
 _CATEGORY_FROM_FILENAME_RE = re.compile(r"^([a-zA-Z][a-zA-Z\- ]+?)_", re.UNICODE)
 
 
 def _infer_category(filename: str, cat_id: Any) -> str:
+    if isinstance(cat_id, int) and cat_id in _CATEGORY_BY_ID:
+        return _CATEGORY_BY_ID[cat_id]
     if filename:
         m = _CATEGORY_FROM_FILENAME_RE.match(filename)
         if m:
