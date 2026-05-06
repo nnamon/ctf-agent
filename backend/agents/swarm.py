@@ -393,6 +393,21 @@ class ChallengeSwarm:
             )
             self.meta.connection_info = live_conn
 
+        # If the backend brought up a VPN sidecar (HtbMachinesBackend),
+        # propagate its network_mode to settings so solver sandboxes
+        # attach to the sidecar's namespace at create time. Mutating the
+        # shared Settings is safe here because (a) the field is set
+        # before any solver task spawns, and (b) free-tier HTB only
+        # allows one machine swarm at a time so there's no concurrent
+        # writer. We reset it in `finally` regardless of outcome.
+        backend_netmode = getattr(self.ctfd, "network_mode", "") or ""
+        if backend_netmode:
+            self.settings.sandbox_network_mode = backend_netmode
+            logger.info(
+                f"[{self.meta.name}] solver sandboxes will attach to "
+                f"network_mode={backend_netmode!r}"
+            )
+
         # Stash the per-solver tasks on the swarm so kill() can cancel
         # them later — without this, kill() only flips cancel_event and
         # the solvers' codex-MCP loops keep ticking until they
@@ -442,6 +457,11 @@ class ChallengeSwarm:
                 logger.warning(
                     f"[{self.meta.name}] stop_instance failed: {e}"
                 )
+            # Always reset sandbox_network_mode so the next swarm starts
+            # from bridge default. (Mutated above only if backend reported
+            # a VPN sidecar; safe to clear unconditionally.)
+            if getattr(self.settings, "sandbox_network_mode", ""):
+                self.settings.sandbox_network_mode = ""
 
     def kill(self) -> None:
         """Cancel all agents for this challenge.

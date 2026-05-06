@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     max_concurrent_challenges: int = 10
     max_attempts_per_challenge: int = 3
     container_memory_limit: str = "16g"
+    # Per-swarm Docker NetworkMode override. Empty → bridge (default).
+    # Set by the swarm at run time when the backend reports a VPN
+    # sidecar is up (HtbMachinesBackend) — solver containers then attach
+    # via "container:<sidecar>" to share its tun0 route. Mutated for the
+    # duration of one machine swarm and reset to "" on teardown.
+    sandbox_network_mode: str = ""
 
     # Persistent flag-attempt log (sqlite). None disables.
     # The CLI's --attempt-log-path / --no-attempt-log flags overwrite this.
@@ -101,6 +107,17 @@ class Settings(BaseSettings):
     # Audience claim must be `aud:5` (labs platform). The CTF events
     # MCP token (`aud:1`) is NOT interchangeable.
     htb_app_token: str = ""
+
+    # ── HackTheBox Machines backend params ──
+    # VPN server id to bind the sidecar tunnel to. 0 = use HTB's
+    # auto-assigned server (read from /connections/servers `assigned`).
+    # Override (e.g. 254 for "US Machines 3") if latency matters or the
+    # auto-assigned server is full.
+    htb_machines_server_id: int = 0
+    # Sidecar image for the OpenVPN tunnel. Defaults to ctf-vpn (a thin
+    # alpine+openvpn image built alongside ctf-sandbox in CI). Kept
+    # separate so non-machine solver containers don't carry openvpn.
+    htb_vpn_image: str = "ctf-vpn"
 
     # ── Multi-env registry ──
     # Comma-separated env names to register beyond `local` (which is

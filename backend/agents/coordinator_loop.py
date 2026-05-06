@@ -48,6 +48,8 @@ def build_deps(
         pwncollege_dojos=getattr(settings, "pwncollege_dojos", []) or [],
         pwnablekr_user_id=getattr(settings, "pwnablekr_user_id", ""),
         htb_app_token=getattr(settings, "htb_app_token", ""),
+        htb_machines_server_id=getattr(settings, "htb_machines_server_id", 0),
+        htb_vpn_image=getattr(settings, "htb_vpn_image", "ctf-vpn"),
     )
     cost_tracker = CostTracker.for_session(settings)
     specs = model_specs or list(DEFAULT_MODELS)

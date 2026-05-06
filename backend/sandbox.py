@@ -194,6 +194,11 @@ class DockerSandbox(ExecEnv):
     # If set, on stop() the workspace is copied here before rmtree. Lets
     # an orchestrator collect artifacts the solver wrote during its run.
     preserve_workspace_to: str = ""
+    # Docker network mode override. Default "" → bridge (Docker's default).
+    # Set to "container:<vpn-sidecar-name>" to share another container's
+    # network namespace — used by HtbMachinesBackend so solver containers
+    # route through the VPN sidecar's tun0 to reach 10.10.x.x targets.
+    network_mode: str = ""
     _container: Any = field(default=None, repr=False)
     _docker: Any = field(default=None, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -237,6 +242,7 @@ class DockerSandbox(ExecEnv):
             memory_limit=getattr(settings, "container_memory_limit", "4g"),
             context_files=list(getattr(settings, "context_files", []) or []),
             preserve_workspace_to=preserve,
+            network_mode=getattr(settings, "sandbox_network_mode", "") or "",
         )
 
     def _parse_memory_limit(self) -> int:
@@ -278,21 +284,29 @@ class DockerSandbox(ExecEnv):
                 else:
                     logger.warning("Context file missing, skipping: %s", src)
 
+            host_config = {
+                "Binds": binds,
+                "ExtraHosts": ["host.docker.internal:host-gateway"],
+                "CapAdd": ["SYS_ADMIN", "SYS_PTRACE"],
+                "SecurityOpt": ["seccomp=unconfined"],
+                "Devices": [{"PathOnHost": "/dev/loop-control", "PathInContainer": "/dev/loop-control", "CgroupPermissions": "rwm"}],
+                "Memory": self._parse_memory_limit(),
+                "NanoCpus": int(2 * 1e9),
+            }
+            if self.network_mode:
+                # When attaching to another container's network namespace
+                # (VPN sidecar) ExtraHosts is invalid — Docker rejects the
+                # create call. Drop it; the sidecar's namespace controls
+                # routing entirely.
+                host_config["NetworkMode"] = self.network_mode
+                host_config.pop("ExtraHosts", None)
             config = {
                 "Image": self.image,
                 "Cmd": ["sleep", "infinity"],
                 "WorkingDir": "/challenge",
                 "Tty": False,
                 "Labels": {CONTAINER_LABEL: "true", RUN_LABEL: RUN_ID},
-                "HostConfig": {
-                    "Binds": binds,
-                    "ExtraHosts": ["host.docker.internal:host-gateway"],
-                    "CapAdd": ["SYS_ADMIN", "SYS_PTRACE"],
-                    "SecurityOpt": ["seccomp=unconfined"],
-                    "Devices": [{"PathOnHost": "/dev/loop-control", "PathInContainer": "/dev/loop-control", "CgroupPermissions": "rwm"}],
-                    "Memory": self._parse_memory_limit(),
-                    "NanoCpus": int(2 * 1e9),
-                },
+                "HostConfig": host_config,
             }
 
             self._container = await self._docker.containers.create(config)

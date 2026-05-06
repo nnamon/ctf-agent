@@ -28,6 +28,11 @@ env:
 jobs:
   # One matrix arm per architecture — each runs on a NATIVE runner so
   # the build is CPU-bound, not QEMU-bound.
+  #
+  # The dedicated ctf-vpn sidecar image (sandbox/Dockerfile.vpn) is
+  # NOT built here — it's opt-in for users running the HtbMachinesBackend.
+  # Build it locally when needed:
+  #   docker build -f sandbox/Dockerfile.vpn -t ctf-vpn:latest sandbox/
   build:
     strategy:
       fail-fast: false

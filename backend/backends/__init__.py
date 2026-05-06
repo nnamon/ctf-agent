@@ -17,6 +17,7 @@ from backend.backends.attempt_log import AttemptLogBackend
 from backend.backends.base import Attempt, Backend, SubmitResult
 from backend.backends.ctfd import CTFdBackend, CTFdSessionBackend
 from backend.backends.htb_labs import HtbLabsBackend
+from backend.backends.htb_machines import HtbMachinesBackend
 from backend.backends.local import LocalBackend
 from backend.backends.manual_confirm import ManualConfirmBackend
 from backend.backends.pwnablekr import PwnableKrBackend
@@ -38,6 +39,8 @@ def make_backend(
     pwncollege_dojos: list[str] | None = None,
     pwnablekr_user_id: str = "",
     htb_app_token: str = "",
+    htb_machines_server_id: int = 0,
+    htb_vpn_image: str = "ctf-vpn",
 ) -> Backend:
     """Construct a backend by kind, optionally wrapped with decorators.
 
@@ -109,6 +112,12 @@ def make_backend(
             inner._csrf_token = csrf_token
     elif kind in ("htb-labs", "htb_labs", "hackthebox", "hackthebox-labs"):
         inner = HtbLabsBackend(app_token=htb_app_token)
+    elif kind in ("htb-machines", "htb_machines", "hackthebox-machines"):
+        inner = HtbMachinesBackend(
+            app_token=htb_app_token,
+            server_id=htb_machines_server_id,
+            sidecar_image=htb_vpn_image,
+        )
     elif kind == "local":
         inner = LocalBackend()
     else:
@@ -125,7 +134,7 @@ __all__ = [
     "Attempt", "Backend", "SubmitResult",
     "CTFdBackend", "CTFdSessionBackend", "LocalBackend",
     "PwnCollegeBackend", "PwnableKrBackend", "PwnableTwBackend",
-    "HtbLabsBackend",
+    "HtbLabsBackend", "HtbMachinesBackend",
     "AttemptLogBackend", "ManualConfirmBackend",
     "make_backend",
 ]
