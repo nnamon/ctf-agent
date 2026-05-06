@@ -110,5 +110,11 @@ class ManualConfirmBackend(Backend):
     async def pull_challenge(self, challenge: dict[str, Any], output_dir: str) -> str:
         return await self.inner.pull_challenge(challenge, output_dir)
 
+    async def start_instance(self, challenge_name: str) -> str | None:
+        return await self.inner.start_instance(challenge_name)
+
+    async def stop_instance(self, challenge_name: str) -> None:
+        await self.inner.stop_instance(challenge_name)
+
     async def close(self) -> None:
         await self.inner.close()

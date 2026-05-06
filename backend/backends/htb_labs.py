@@ -69,6 +69,10 @@ class HtbLabsBackend(Backend):
     # Populated by fetch_challenge_stubs; used by submit_flag and
     # pull_challenge to map slug → numeric id without re-fetching.
     _stubs_by_name: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
+    # Set of challenge slugs we've actively spawned an instance for in
+    # this process. stop_instance only hits the API for these; static
+    # challenges we never started skip the no-op 404 round-trip.
+    _started_instances: set[str] = field(default_factory=set, repr=False)
 
     # ---------- HTTP plumbing ----------
 
@@ -280,6 +284,123 @@ class HtbLabsBackend(Backend):
             f'INCORRECT — "{flag}" rejected by HTB ({msg})',
         )
 
+    # ---------- per-challenge instance lifecycle ----------
+
+    def _format_connection(self, category: str, ip: str, ports: list[int]) -> str:
+        """Render a category-appropriate connection_info string.
+
+        Web/Blockchain → http://ip:port (most are HTTP services).
+        Pwn/GamePwn/Crypto → nc ip port (interactive socket).
+        Anything else → bare ip:port + a hint for the solver to probe.
+        """
+        if not ports:
+            return ip or ""
+        port = ports[0]
+        cat = (category or "").lower()
+        if cat in ("web", "blockchain"):
+            return f"http://{ip}:{port}"
+        if cat in ("pwn", "gamepwn", "crypto"):
+            return f"nc {ip} {port}"
+        return f"{ip}:{port}  (try `nc {ip} {port}` for interactive services or `curl http://{ip}:{port}/` for HTTP)"
+
+    async def start_instance(self, challenge_name: str) -> str | None:
+        """Spawn a per-user docker instance via POST /challenge/start.
+
+        Idempotent: if the challenge already has a running instance for
+        this user (visible in /challenge/info → play_info.status), we
+        skip the start call and return the existing connection_info.
+
+        For non-docker challenges, returns None (no-op).
+        """
+        if challenge_name not in self._stubs_by_name:
+            await self.fetch_challenge_stubs()
+        stub = self._stubs_by_name.get(challenge_name)
+        if stub is None:
+            raise RuntimeError(f"HTB challenge {challenge_name!r} not found")
+        cid = stub["_htb"]["id"]
+
+        info = await self._fetch_challenge_info(cid)
+        if not bool(info.get("docker")):
+            return None  # static challenge — no instance needed
+
+        play = info.get("play_info") or {}
+        existing_ip = play.get("ip") or info.get("docker_ip")
+        existing_ports = play.get("ports") or info.get("docker_ports") or []
+        if existing_ip and existing_ports and (
+            play.get("status") == "ready" or info.get("docker_status") == "ready"
+        ):
+            logger.info(
+                "HTB %s: reusing existing instance %s:%s",
+                challenge_name, existing_ip, existing_ports[0],
+            )
+            self._started_instances.add(challenge_name)
+            return self._format_connection(stub["category"], existing_ip, existing_ports)
+
+        resp = await self._request(
+            "POST", "/challenge/start",
+            json={"challenge_id": cid},
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"HTB start_instance({challenge_name}): HTTP {resp.status_code} {resp.text[:200]}"
+            )
+        body = resp.json()
+        logger.info("HTB %s: %s (instance_id=%s)",
+                    challenge_name, body.get("message", "started"), body.get("id"))
+
+        # Poll /info until play_info.ip + ports are populated. VE
+        # challenges are typically ready in the same response, but harder
+        # ones may need a few seconds. Cap at 30 s to fail fast on stuck
+        # instances rather than blocking the swarm forever.
+        deadline = asyncio.get_event_loop().time() + 30.0
+        while asyncio.get_event_loop().time() < deadline:
+            info = await self._fetch_challenge_info(cid)
+            play = info.get("play_info") or {}
+            ip = play.get("ip") or info.get("docker_ip")
+            ports = play.get("ports") or info.get("docker_ports") or []
+            status = play.get("status") or info.get("docker_status") or ""
+            if ip and ports and status == "ready":
+                expires = play.get("expires_at") or "(unknown)"
+                logger.info(
+                    "HTB %s: instance ready at %s:%s (expires %s)",
+                    challenge_name, ip, ports[0], expires,
+                )
+                self._started_instances.add(challenge_name)
+                return self._format_connection(stub["category"], ip, ports)
+            await asyncio.sleep(2.0)
+        raise RuntimeError(
+            f"HTB start_instance({challenge_name}): instance never became ready within 30s"
+        )
+
+    async def stop_instance(self, challenge_name: str) -> None:
+        """POST /challenge/stop with {challenge_id}. Skipped if we never
+        called start_instance for this challenge in this process — HTB
+        returns 404 for non-existent containers and the noise pollutes
+        the trace for static-only swarms."""
+        if challenge_name not in self._started_instances:
+            return
+        stub = self._stubs_by_name.get(challenge_name)
+        if stub is None:
+            return
+        cid = stub["_htb"]["id"]
+        try:
+            resp = await self._request(
+                "POST", "/challenge/stop",
+                json={"challenge_id": cid},
+            )
+            if resp.status_code == 200:
+                logger.info("HTB %s: %s", challenge_name, resp.json().get("message", "stopped"))
+            else:
+                # Don't raise — teardown errors shouldn't mask solver outcome.
+                logger.warning(
+                    "HTB stop_instance(%s): HTTP %d %s",
+                    challenge_name, resp.status_code, resp.text[:200],
+                )
+        except Exception as e:
+            logger.warning("HTB stop_instance(%s) failed: %s", challenge_name, e)
+        finally:
+            self._started_instances.discard(challenge_name)
+
     # ---------- pull ----------
 
     async def pull_challenge(self, challenge: dict[str, Any], output_dir: str) -> str:
@@ -338,19 +459,28 @@ class HtbLabsBackend(Backend):
             except Exception:
                 pass
 
+        # For docker challenges, the per-user instance IP+port is
+        # dynamic and only meaningful at solve time. Write a placeholder
+        # so the on-disk metadata stays stable across spawns; the swarm
+        # overrides connection_info live via Backend.start_instance().
+        is_docker = bool(stub["_htb"].get("docker"))
+        connection_info = (
+            "(spawned at solve time — backend will populate live IP+port)"
+            if is_docker else stub.get("connection_info", "")
+        )
         meta = {
             "name": stub["name"],
             "title": stub.get("title", stub["name"]),
             "category": stub.get("category", "Unknown"),
             "description": desc,
             "value": stub.get("value", 0),
-            "connection_info": stub.get("connection_info", ""),
+            "connection_info": connection_info,
             "tags": ["htb", "labs", stub["_htb"].get("difficulty", "").lower()],
             "solves": stub.get("solves", 0),
             "htb": {
                 "id": stub["_htb"]["id"],
                 "difficulty": stub["_htb"].get("difficulty", ""),
-                "docker": stub["_htb"].get("docker", False),
+                "docker": is_docker,
             },
         }
         (ch_dir / "metadata.yml").write_text(

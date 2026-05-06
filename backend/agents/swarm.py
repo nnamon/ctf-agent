@@ -372,6 +372,27 @@ class ChallengeSwarm:
     async def run(self) -> SolverResult | None:
         """Run all solvers in parallel. Returns the winner's result or None."""
         self.started_at = time.time()
+
+        # Per-challenge instance lifecycle. Backends with docker-instanced
+        # challenges (HTB Labs) spawn one per user; sibling solvers in
+        # this swarm share it. start_instance returns the live IP+port to
+        # inject into meta.connection_info; on static-distfile backends
+        # (the default no-op) it returns None and we leave meta alone.
+        try:
+            live_conn = await self.ctfd.start_instance(self.meta.name)
+        except Exception as e:
+            logger.error(
+                f"[{self.meta.name}] start_instance failed: {e} — "
+                "aborting swarm without spawning solvers"
+            )
+            self.finished_at = time.time()
+            return None
+        if live_conn:
+            logger.info(
+                f"[{self.meta.name}] live instance: {live_conn}"
+            )
+            self.meta.connection_info = live_conn
+
         # Stash the per-solver tasks on the swarm so kill() can cancel
         # them later — without this, kill() only flips cancel_event and
         # the solvers' codex-MCP loops keep ticking until they
@@ -412,6 +433,15 @@ class ChallengeSwarm:
             return None
         finally:
             self.finished_at = time.time()
+            # Tear down any per-user docker instance we spawned. Default
+            # backend impl is a no-op so this is safe regardless of
+            # whether start_instance actually did anything.
+            try:
+                await self.ctfd.stop_instance(self.meta.name)
+            except Exception as e:
+                logger.warning(
+                    f"[{self.meta.name}] stop_instance failed: {e}"
+                )
 
     def kill(self) -> None:
         """Cancel all agents for this challenge.

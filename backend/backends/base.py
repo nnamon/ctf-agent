@@ -72,6 +72,25 @@ class Backend(ABC):
         Returns the on-disk challenge directory path.
         """
 
+    # ---- per-challenge instance lifecycle ----
+    # For backends where each challenge ships a per-user docker instance
+    # (HTB Labs, the on-demand variant of CTFd, etc.), the swarm calls
+    # start_instance once before any solver runs and stop_instance on
+    # teardown. Static-distfile-only backends inherit the no-op default.
+    async def start_instance(self, challenge_name: str) -> str | None:
+        """Spawn a per-user instance for the challenge if applicable.
+
+        Returns a connection_info string ("nc 1.2.3.4 31234",
+        "http://1.2.3.4:31234", etc.) for the swarm to inject into
+        meta.connection_info, or None if the challenge is static and
+        no live instance is needed. Default: no-op (returns None)."""
+        return None
+
+    async def stop_instance(self, challenge_name: str) -> None:
+        """Tear down a previously-started instance. Idempotent — must
+        not raise if no instance is running. Default: no-op."""
+        return None
+
     # ---- lifecycle ----
     @abstractmethod
     async def close(self) -> None:
