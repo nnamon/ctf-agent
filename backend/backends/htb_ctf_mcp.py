@@ -448,7 +448,16 @@ class HtbCtfMcpBackend(Backend):
                 "already_solved", msg,
                 f'ALREADY SOLVED — flag previously accepted ({msg})',
             )
-        if success:
+        # The MCP wrapper's submit_flag response is shaped
+        # `{"message": "Correct flag!"}` for accepts and
+        # `{"message": "Wrong flag!"}` (or similar) for rejects — there
+        # is NO `success` boolean. Classify on the message content too,
+        # not just the (frequently-absent) success field. Belt-and-
+        # braces: `success=true` from any future schema also wins.
+        accepted = success or (
+            "correct" in msg_lower and "incorrect" not in msg_lower
+        )
+        if accepted:
             stub["_htb_mcp"]["solved"] = True
             return SubmitResult(
                 "correct", msg or "accepted",
