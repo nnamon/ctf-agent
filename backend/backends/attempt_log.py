@@ -204,5 +204,8 @@ class AttemptLogBackend(Backend):
     async def stop_instance(self, challenge_name: str) -> None:
         await self.inner.stop_instance(challenge_name)
 
+    def instance_lifetime_remaining_s(self, challenge_name: str) -> float | None:
+        return self.inner.instance_lifetime_remaining_s(challenge_name)
+
     async def close(self) -> None:
         await self.inner.close()

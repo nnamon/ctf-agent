@@ -300,6 +300,42 @@ async def run_event_loop(
                     logger.info("Retired killed swarm %s after %ds cooldown",
                                 name, KILLED_TTL_S)
 
+                # Expiry watcher: per-user docker instances + HTB machines
+                # auto-terminate after a fixed lease (~2h on free tier).
+                # If a swarm runs longer, the connection_info goes dark
+                # mid-solve. Surface a one-shot T-15min warning so the
+                # coord LLM can decide: push harder, re-spawn, or surrender.
+                # Backends without instance lifecycle (static challenges,
+                # MCP, creds) inherit the no-op default and skip silently.
+                EXPIRY_WARN_S = 15 * 60
+                for name, task in list(deps.swarm_tasks.items()):
+                    if task.done():
+                        continue
+                    swarm = deps.swarms.get(name)
+                    if swarm is None or swarm.expiry_warned:
+                        continue
+                    try:
+                        remaining = deps.ctfd.instance_lifetime_remaining_s(name)
+                    except Exception:
+                        remaining = None
+                    if remaining is None or remaining > EXPIRY_WARN_S:
+                        continue
+                    swarm.expiry_warned = True
+                    mins = max(0.0, remaining) / 60.0
+                    msg = (
+                        f"INSTANCE EXPIRY WARNING: {name!r} live instance "
+                        f"expires in ~{mins:.1f} min. If the solver isn't "
+                        f"close to a flag, consider kill_swarm + re-spawn "
+                        f"to reset the lease, or accept that the connection "
+                        f"will go dark mid-run."
+                    )
+                    parts.append(msg)
+                    if deps.event_hub:
+                        deps.event_hub.broadcast(
+                            "instance_expiring", challenge=name,
+                            text=f"{name}: ~{mins:.0f} min left",
+                        )
+
                 active = [n for n, t in deps.swarm_tasks.items() if not t.done()]
                 solved_set = poller.known_solved
                 unsolved_set = {

@@ -58,7 +58,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +68,17 @@ import httpx
 
 from backend.backends.base import Backend, SubmitResult
 from backend.sandbox import RUN_ID, COORD_PID, CONTAINER_LABEL, RUN_LABEL, COORD_PID_LABEL
+
+
+def _parse_expires_at(raw: Any) -> float | None:
+    """Parse HTB's ISO 8601 expires_at into a unix timestamp."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        s = raw.rstrip("Z").split(".")[0]
+        return datetime.fromisoformat(s).replace(tzinfo=timezone.utc).timestamp()
+    except (ValueError, TypeError):
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +133,11 @@ class HtbMachinesBackend(Backend):
     # machine_slug → connection_info string from the live spawn (cached
     # so sibling start_instance calls don't re-hit /machine/profile).
     _spawn_conn: dict[str, str] = field(default_factory=dict, repr=False)
+    # machine_slug → unix expiry timestamp. Populated when start_instance
+    # parses playInfo.expires_at; consumed by the coord's expiry watcher.
+    # Indexed by machine_slug (not challenge_name) so both halves of a
+    # user/root pair share the value.
+    _machine_expires_at: dict[str, float] = field(default_factory=dict, repr=False)
     # VPN sidecar container handle (aiodocker container object).
     _vpn_container: Any = field(default=None, repr=False)
     _vpn_container_name: str = field(default="", repr=False)
@@ -624,6 +642,7 @@ class HtbMachinesBackend(Backend):
         # provisioning can take 30-90s especially for Windows machines.
         deadline = asyncio.get_event_loop().time() + 180.0
         ip: str | None = None
+        exp_ts: float | None = None
         while asyncio.get_event_loop().time() < deadline:
             info = await self._fetch_profile(mid)
             play = info.get("playInfo") or {}
@@ -635,6 +654,7 @@ class HtbMachinesBackend(Backend):
                     "HTB %s: machine ready at %s (expires %s, life=%s)",
                     challenge_name, ip, expires, life,
                 )
+                exp_ts = _parse_expires_at(play.get("expires_at"))
                 break
             await asyncio.sleep(5.0)
         if not ip:
@@ -647,6 +667,8 @@ class HtbMachinesBackend(Backend):
         os_ = stub["_htb_m"].get("os", "?")
         conn = f"{ip}  (HTB machine, {os_} — scan with `nmap -sCV {ip}`)"
         self._spawn_conn[machine_slug] = conn
+        if exp_ts is not None:
+            self._machine_expires_at[machine_slug] = exp_ts
         return conn
 
     async def stop_instance(self, challenge_name: str) -> None:
@@ -672,6 +694,7 @@ class HtbMachinesBackend(Backend):
         # Last sibling out — actually terminate.
         self._spawn_refs.pop(machine_slug, None)
         self._spawn_conn.pop(machine_slug, None)
+        self._machine_expires_at.pop(machine_slug, None)
         mid = stub["_htb_m"]["machine_id"]
         try:
             resp = await self._request(
@@ -691,6 +714,20 @@ class HtbMachinesBackend(Backend):
         # No machines left → drop VPN.
         if not self._spawn_refs:
             await self._stop_vpn_sidecar()
+
+    def instance_lifetime_remaining_s(self, challenge_name: str) -> float | None:
+        # Both halves of a user/root pair share the same machine, so
+        # we look up by machine_slug, not challenge_name.
+        stub = self._machines_by_name.get(challenge_name)
+        if stub is None:
+            return None
+        machine_slug = stub["_htb_m"].get("machine_slug")
+        if not machine_slug:
+            return None
+        exp = self._machine_expires_at.get(machine_slug)
+        if exp is None:
+            return None
+        return exp - time.time()
 
     # ---------- pull ----------
 

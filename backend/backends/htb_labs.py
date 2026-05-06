@@ -31,12 +31,26 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
 from backend.backends.base import Backend, SubmitResult
+
+
+def _parse_expires_at(raw: Any) -> float | None:
+    """Parse HTB's ISO 8601 expires_at (e.g. '2026-05-06T14:00:07.000Z')
+    into a unix timestamp. Returns None on missing/unparseable input."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        s = raw.rstrip("Z").split(".")[0]
+        return datetime.fromisoformat(s).replace(tzinfo=timezone.utc).timestamp()
+    except (ValueError, TypeError):
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +87,10 @@ class HtbLabsBackend(Backend):
     # this process. stop_instance only hits the API for these; static
     # challenges we never started skip the no-op 404 round-trip.
     _started_instances: set[str] = field(default_factory=set, repr=False)
+    # challenge_name → unix expiry timestamp (seconds since epoch).
+    # Populated when start_instance succeeds with an `expires_at` from
+    # play_info; consumed by the coord's periodic expiry watcher.
+    _instance_expires_at: dict[str, float] = field(default_factory=dict, repr=False)
 
     # ---------- HTTP plumbing ----------
 
@@ -340,6 +358,9 @@ class HtbLabsBackend(Backend):
                 challenge_name, existing_ip, existing_ports[0],
             )
             self._started_instances.add(challenge_name)
+            exp = _parse_expires_at(play.get("expires_at"))
+            if exp:
+                self._instance_expires_at[challenge_name] = exp
             return self._format_connection(stub["category"], existing_ip, existing_ports)
 
         resp = await self._request(
@@ -372,6 +393,9 @@ class HtbLabsBackend(Backend):
                     challenge_name, ip, ports[0], expires,
                 )
                 self._started_instances.add(challenge_name)
+                exp = _parse_expires_at(play.get("expires_at"))
+                if exp:
+                    self._instance_expires_at[challenge_name] = exp
                 return self._format_connection(stub["category"], ip, ports)
             await asyncio.sleep(2.0)
         raise RuntimeError(
@@ -406,6 +430,13 @@ class HtbLabsBackend(Backend):
             logger.warning("HTB stop_instance(%s) failed: %s", challenge_name, e)
         finally:
             self._started_instances.discard(challenge_name)
+            self._instance_expires_at.pop(challenge_name, None)
+
+    def instance_lifetime_remaining_s(self, challenge_name: str) -> float | None:
+        exp = self._instance_expires_at.get(challenge_name)
+        if exp is None:
+            return None
+        return exp - time.time()
 
     # ---------- pull ----------
 

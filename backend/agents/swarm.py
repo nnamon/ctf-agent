@@ -84,6 +84,10 @@ class ChallengeSwarm:
     # keeps "remembering" the kill in the active_swarms snapshot and
     # never gives a deprioritised challenge a second chance.
     killed_at: float | None = None
+    # One-shot guard for the coord's expiry warner: flipped True after
+    # the T-15min warning fires so the next periodic tick doesn't spam
+    # the LLM with the same alert until the swarm finishes/respawns.
+    expiry_warned: bool = False
     _flag_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _submit_count: dict[str, int] = field(default_factory=dict)  # per-model wrong submission count
     _submitted_flags: set[str] = field(default_factory=set)  # dedup exact flags

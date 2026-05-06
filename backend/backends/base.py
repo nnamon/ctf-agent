@@ -91,6 +91,18 @@ class Backend(ABC):
         not raise if no instance is running. Default: no-op."""
         return None
 
+    def instance_lifetime_remaining_s(self, challenge_name: str) -> float | None:
+        """Seconds until the per-user instance for this challenge expires.
+
+        None means: no instance, instance has no time-bound lifetime,
+        or the backend doesn't expose expiry. Used by the coordinator's
+        periodic tick to emit T-15min warnings so the LLM can decide
+        whether to push harder, re-spawn, or surrender. Default: None.
+        Synchronous because callers (the coord loop) read it on every
+        tick and we don't want to hit the API for it; concrete backends
+        cache the value at spawn time."""
+        return None
+
     # ---- lifecycle ----
     @abstractmethod
     async def close(self) -> None:
