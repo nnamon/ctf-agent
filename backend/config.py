@@ -96,6 +96,12 @@ class Settings(BaseSettings):
     # rank page (rare).
     pwnablekr_user_id: str = ""
 
+    # ── HackTheBox Labs backend params ──
+    # Personal app token from app.hackthebox.com → Profile → App Tokens.
+    # Audience claim must be `aud:5` (labs platform). The CTF events
+    # MCP token (`aud:1`) is NOT interchangeable.
+    htb_app_token: str = ""
+
     # ── Multi-env registry ──
     # Comma-separated env names to register beyond `local` (which is
     # always present). Recognised values: "pwncollege". Auto-set to

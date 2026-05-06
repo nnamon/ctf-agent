@@ -16,6 +16,7 @@ from pathlib import Path
 from backend.backends.attempt_log import AttemptLogBackend
 from backend.backends.base import Attempt, Backend, SubmitResult
 from backend.backends.ctfd import CTFdBackend, CTFdSessionBackend
+from backend.backends.htb_labs import HtbLabsBackend
 from backend.backends.local import LocalBackend
 from backend.backends.manual_confirm import ManualConfirmBackend
 from backend.backends.pwnablekr import PwnableKrBackend
@@ -36,6 +37,7 @@ def make_backend(
     manual_confirm: bool = False,
     pwncollege_dojos: list[str] | None = None,
     pwnablekr_user_id: str = "",
+    htb_app_token: str = "",
 ) -> Backend:
     """Construct a backend by kind, optionally wrapped with decorators.
 
@@ -105,6 +107,8 @@ def make_backend(
         )
         if csrf_token:
             inner._csrf_token = csrf_token
+    elif kind in ("htb-labs", "htb_labs", "hackthebox", "hackthebox-labs"):
+        inner = HtbLabsBackend(app_token=htb_app_token)
     elif kind == "local":
         inner = LocalBackend()
     else:
@@ -121,6 +125,7 @@ __all__ = [
     "Attempt", "Backend", "SubmitResult",
     "CTFdBackend", "CTFdSessionBackend", "LocalBackend",
     "PwnCollegeBackend", "PwnableKrBackend", "PwnableTwBackend",
+    "HtbLabsBackend",
     "AttemptLogBackend", "ManualConfirmBackend",
     "make_backend",
 ]

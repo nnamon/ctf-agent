@@ -47,6 +47,7 @@ def build_deps(
         manual_confirm=getattr(settings, "manual_confirm", False),
         pwncollege_dojos=getattr(settings, "pwncollege_dojos", []) or [],
         pwnablekr_user_id=getattr(settings, "pwnablekr_user_id", ""),
+        htb_app_token=getattr(settings, "htb_app_token", ""),
     )
     cost_tracker = CostTracker.for_session(settings)
     specs = model_specs or list(DEFAULT_MODELS)

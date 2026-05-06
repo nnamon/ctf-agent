@@ -97,6 +97,7 @@ async def _pull(
 
     # Build backend WITHOUT AttemptLog or ManualConfirm — pull is read-only.
     backend = make_backend(
+        kind=getattr(settings, "backend_kind", None) or None,
         base_url=settings.ctfd_url,
         token=settings.ctfd_token,
         username=settings.ctfd_user,
@@ -105,6 +106,9 @@ async def _pull(
         csrf_token=settings.ctfd_csrf_token,
         attempt_log_path=None,
         manual_confirm=False,
+        pwncollege_dojos=getattr(settings, "pwncollege_dojos", []) or [],
+        pwnablekr_user_id=getattr(settings, "pwnablekr_user_id", ""),
+        htb_app_token=getattr(settings, "htb_app_token", ""),
     )
 
     try:
