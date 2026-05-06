@@ -115,8 +115,14 @@ retdec             Open-source LLVM-based decompiler (amd64 sandboxes only).
                      retdec-decompiler binary -o out.c
                    On arm64 sandboxes use ghidra-headless or r2 pdg instead.
 ilspycmd           .NET decompiler. ilspycmd app.dll -o out/   (or -lv 8.0 etc.)
-jadx               Java/APK decompiler. jadx -d out/ app.jar / app.apk
+jadx               Java/APK decompiler (primary). jadx -d out/ app.jar / app.apk
                    GUI variant available as jadx-gui (X required).
+cfr                Alternative Java decompiler — try when jadx mangles
+                   control flow on obfuscated bytecode.
+                   cfr foo.jar > out.java   (or cfr foo.class)
+fernflower         JetBrains' decompiler — strong on lambdas / streams /
+                   modern Java. fernflower input.jar /outdir/
+                   Output is .java files in <outdir>/<input-basename>/.
 javap              JVM bytecode disassembler. javap -c -p ClassName, javap -v -p Class.
 uncompyle6         Python <=3.8 .pyc decompiler. uncompyle6 file.pyc
 decompyle3         Python 3.7-3.8 .pyc decompiler (alternative).

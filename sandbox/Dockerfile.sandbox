@@ -197,6 +197,28 @@ RUN curl -sSL "https://github.com/skylot/jadx/releases/download/v1.5.0/jadx-1.5.
     && ln -s /opt/jadx/bin/jadx /usr/local/bin/jadx \
     && ln -s /opt/jadx/bin/jadx-gui /usr/local/bin/jadx-gui
 
+# ── CFR (Java decompiler — handles obfuscated bytecode jadx mangles) ─────────
+# Single-jar drop-in. Wrapper at /usr/local/bin/cfr lets the agent invoke it
+# the same way as jadx: `cfr foo.jar > out.java`.
+RUN curl -fsSL "https://www.benf.org/other/cfr/cfr-0.152.jar" -o /opt/cfr.jar \
+    && printf '#!/bin/bash\nexec java -jar /opt/cfr.jar "$@"\n' > /usr/local/bin/cfr \
+    && chmod +x /usr/local/bin/cfr \
+    || echo "cfr download failed (non-fatal — jadx still works)"
+
+# ── Fernflower (JetBrains' decompiler — strong on lambdas + modern Java) ─────
+# No pre-built jar release; build from the fesh0r mirror via gradle (~30s).
+# Wrapper invocation: `fernflower <input.jar|.class> <outdir>`.
+RUN git clone --depth=1 https://github.com/fesh0r/fernflower /tmp/fernflower \
+    && cd /tmp/fernflower \
+    && ./gradlew --no-daemon build \
+    && mkdir -p /opt/fernflower \
+    && cp build/libs/fernflower.jar /opt/fernflower/ \
+    && cd / && rm -rf /tmp/fernflower /root/.gradle \
+    && printf '#!/bin/bash\nexec java -jar /opt/fernflower/fernflower.jar "$@"\n' \
+       > /usr/local/bin/fernflower \
+    && chmod +x /usr/local/bin/fernflower \
+    || echo "fernflower build failed (non-fatal — jadx + cfr still cover most cases)"
+
 # ── Wordlists (small subset of SecLists for ffuf/dirbusting) ──────────────────
 RUN mkdir -p /opt/wordlists \
     && curl -sSL https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/Web-Content/common.txt \
