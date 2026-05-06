@@ -65,7 +65,7 @@ from typing import Any
 import httpx
 
 from backend.backends.base import Backend, SubmitResult
-from backend.sandbox import RUN_ID, CONTAINER_LABEL, RUN_LABEL
+from backend.sandbox import RUN_ID, COORD_PID, CONTAINER_LABEL, RUN_LABEL, COORD_PID_LABEL
 
 logger = logging.getLogger(__name__)
 
@@ -470,6 +470,7 @@ class HtbMachinesBackend(Backend):
                 "Labels": {
                     CONTAINER_LABEL: "true",
                     RUN_LABEL: RUN_ID,
+                    COORD_PID_LABEL: COORD_PID,
                     "ctf-agent.role": "vpn-sidecar",
                 },
                 "HostConfig": {

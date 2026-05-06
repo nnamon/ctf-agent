@@ -234,10 +234,20 @@ async def _run_single(
     from backend.cost_tracker import CostTracker
     from backend.backends import make_backend
     from backend.prompts import ChallengeMeta
-    from backend.sandbox import cleanup_orphan_containers, configure_semaphore
+    from backend.sandbox import (
+        cleanup_dead_run_containers,
+        cleanup_orphan_containers,
+        configure_semaphore,
+    )
 
     max_containers = max_challenges * len(model_specs)
     configure_semaphore(max_containers)
+    # cleanup_dead_run_containers reclaims sandboxes from a SIGKILL'd
+    # prior coord (PID-label check); cleanup_orphan_containers wipes
+    # any partials from this run-id (paranoia in case of a previous
+    # crash + restart with the same RUN_ID — vanishingly rare since
+    # RUN_ID is per-process, but kept for defence-in-depth).
+    await cleanup_dead_run_containers()
     await cleanup_orphan_containers()
 
     challenge_path = Path(challenge_dir)
@@ -422,10 +432,15 @@ async def _run_coordinator(
     writeup_model: str = "claude-opus-4-7",
 ) -> None:
     """Run the full coordinator (continuous until Ctrl+C)."""
-    from backend.sandbox import cleanup_orphan_containers, configure_semaphore
+    from backend.sandbox import (
+        cleanup_dead_run_containers,
+        cleanup_orphan_containers,
+        configure_semaphore,
+    )
 
     max_containers = max_challenges * len(model_specs)
     configure_semaphore(max_containers)
+    await cleanup_dead_run_containers()
     await cleanup_orphan_containers()
     console.print(f"[bold]Starting coordinator ({coordinator_backend}, Ctrl+C to stop)...[/bold]\n")
 

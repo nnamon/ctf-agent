@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
 import shlex
 import tarfile
 import tempfile
@@ -31,11 +32,39 @@ logger = logging.getLogger(__name__)
 
 CONTAINER_LABEL = "ctf-agent"
 RUN_LABEL = "ctf-agent.run"
+# PID of the coord/CLI process that spawned this container. Used by
+# `cleanup_dead_run_containers` at startup to detect leftovers from a
+# crashed prior process and reclaim them — without it the only
+# correlator we had was age (cleanup_stale_containers, default 6h),
+# which lets a SIGKILL'd coord leak ~100 containers for hours.
+COORD_PID_LABEL = "ctf-agent.coord_pid"
 # Per-process run-id. Containers are tagged with this so concurrent
 # ctf-agent invocations don't trample each other's sandboxes during cleanup.
 # Operators can `docker ps --filter label=ctf-agent.run=<RUN_ID>` to inspect
 # one run's containers from any other shell.
 RUN_ID = uuid.uuid4().hex[:12]
+COORD_PID = str(os.getpid())
+
+
+def _pid_alive(pid: int) -> bool:
+    """True iff a process with this PID is currently running.
+
+    Uses kill(pid, 0) which delivers no signal but performs the standard
+    permission/existence checks. ProcessLookupError → process is gone;
+    PermissionError → process exists but isn't ours (treat as alive,
+    we don't want to nuke another user's containers).
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
 
 # Concurrency control
 _start_semaphore: asyncio.Semaphore | None = None
@@ -162,6 +191,67 @@ async def cleanup_all_containers() -> int:
     deleted = await _delete_matching({"label": [CONTAINER_LABEL]})
     if deleted:
         logger.info("Cleaned up %d ctf-agent container(s)", deleted)
+    return deleted
+
+
+async def cleanup_dead_run_containers() -> int:
+    """Kill ctf-agent containers whose owning coord PID is no longer alive.
+
+    Called at CLI startup to reclaim leftovers from a SIGKILL'd prior
+    process — the canonical "I killed the coord and now have 100 zombie
+    sandboxes" case. Concurrent live ctf-agent processes are preserved:
+    we only kill containers whose `ctf-agent.coord_pid` label points
+    at a dead PID (or, for legacy containers without the label, that
+    have aged past 30 min — younger ones might belong to a brand-new
+    sibling coord that hasn't tagged yet).
+    """
+    deleted = 0
+    legacy_cutoff = time.time() - (30 * 60)
+    try:
+        docker = aiodocker.Docker()
+        try:
+            containers = await docker.containers.list(
+                all=True,
+                filters={"label": [CONTAINER_LABEL]},
+            )
+            for c in containers:
+                try:
+                    info = await c.show()
+                    labels = (info.get("Config") or {}).get("Labels") or {}
+                    pid_label = labels.get(COORD_PID_LABEL, "")
+                    if pid_label:
+                        try:
+                            pid = int(pid_label)
+                        except ValueError:
+                            continue
+                        if pid == int(COORD_PID):
+                            continue  # ours — never reclaim
+                        if _pid_alive(pid):
+                            continue  # another live coord — leave alone
+                    else:
+                        # Legacy container with no PID label: fall back
+                        # to age. Anything <30 min old we leave alone
+                        # to avoid racing a freshly-started sibling.
+                        raw = info.get("Created", "").rstrip("Z").split(".")[0]
+                        if not raw:
+                            continue
+                        ts = datetime.fromisoformat(raw).replace(
+                            tzinfo=timezone.utc).timestamp()
+                        if ts > legacy_cutoff:
+                            continue
+                    await c.delete(force=True)
+                    deleted += 1
+                except Exception:
+                    pass
+        finally:
+            await docker.close()
+    except Exception as e:
+        logger.warning("Dead-run cleanup failed: %s", e)
+    if deleted:
+        logger.info(
+            "Reclaimed %d container(s) from dead/legacy ctf-agent runs",
+            deleted,
+        )
     return deleted
 
 
@@ -305,7 +395,11 @@ class DockerSandbox(ExecEnv):
                 "Cmd": ["sleep", "infinity"],
                 "WorkingDir": "/challenge",
                 "Tty": False,
-                "Labels": {CONTAINER_LABEL: "true", RUN_LABEL: RUN_ID},
+                "Labels": {
+                    CONTAINER_LABEL: "true",
+                    RUN_LABEL: RUN_ID,
+                    COORD_PID_LABEL: COORD_PID,
+                },
                 "HostConfig": host_config,
             }
 

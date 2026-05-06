@@ -465,7 +465,7 @@ class HtbCtfCredsBackend(Backend):
         import aiodocker  # type: ignore
 
         ovpn = await self._fetch_ovpn()
-        from backend.sandbox import RUN_ID, CONTAINER_LABEL, RUN_LABEL
+        from backend.sandbox import RUN_ID, COORD_PID, CONTAINER_LABEL, RUN_LABEL, COORD_PID_LABEL
         docker = aiodocker.Docker()
         self._vpn_container_name = f"ctf-creds-vpn-{RUN_ID[:12]}"
         try:
@@ -477,6 +477,7 @@ class HtbCtfCredsBackend(Backend):
                             "--connect-retry-max", "3", "--script-security", "2"],
                     "Tty": False,
                     "Labels": {CONTAINER_LABEL: "true", RUN_LABEL: RUN_ID,
+                               COORD_PID_LABEL: COORD_PID,
                                "ctf-agent.role": "vpn-sidecar"},
                     "HostConfig": {
                         "Binds": [f"{str(ovpn)}:/vpn.ovpn:ro"],
