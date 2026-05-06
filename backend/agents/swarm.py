@@ -79,6 +79,11 @@ class ChallengeSwarm:
     # from log timestamps.
     started_at: float | None = None
     finished_at: float | None = None
+    # Set by kill() so the coordinator-side cleanup pass can drop killed
+    # swarms from deps.swarms after a cooldown — without this the LLM
+    # keeps "remembering" the kill in the active_swarms snapshot and
+    # never gives a deprioritised challenge a second chance.
+    killed_at: float | None = None
     _flag_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _submit_count: dict[str, int] = field(default_factory=dict)  # per-model wrong submission count
     _submitted_flags: set[str] = field(default_factory=set)  # dedup exact flags
@@ -409,6 +414,8 @@ class ChallengeSwarm:
         explicit task.cancel() raises CancelledError into the coroutine
         immediately, freeing the swarm slot for the next spawn."""
         self.cancel_event.set()
+        if self.killed_at is None:
+            self.killed_at = time.time()
         for t in getattr(self, "_solver_tasks", []):
             if not t.done():
                 t.cancel()

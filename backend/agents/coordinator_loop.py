@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from typing import Any
@@ -270,6 +271,28 @@ async def run_event_loop(
                 except Exception as e:
                     logger.warning("usage_log periodic flush failed: %s", e)
                 from backend.agents.coordinator_core import _is_skipped
+
+                # Retire long-killed swarms so the LLM stops "remembering"
+                # them in active_swarms snapshots — without this, deprioritised
+                # challenges that got killed once stay deprioritised forever
+                # (the LLM keeps seeing them in cancelled state and skips them
+                # on every IDLE nudge). 30 min cooldown lets the kill decision
+                # cool down before the challenge becomes a fresh candidate.
+                KILLED_TTL_S = 1800
+                now_w = time.time()
+                stale_killed = [
+                    name for name, swarm in deps.swarms.items()
+                    if swarm.cancel_event.is_set()
+                    and swarm.killed_at is not None
+                    and (now_w - swarm.killed_at) >= KILLED_TTL_S
+                    and (deps.swarm_tasks.get(name) is None
+                         or deps.swarm_tasks[name].done())
+                ]
+                for name in stale_killed:
+                    deps.swarms.pop(name, None)
+                    logger.info("Retired killed swarm %s after %ds cooldown",
+                                name, KILLED_TTL_S)
+
                 active = [n for n, t in deps.swarm_tasks.items() if not t.done()]
                 solved_set = poller.known_solved
                 unsolved_set = {
