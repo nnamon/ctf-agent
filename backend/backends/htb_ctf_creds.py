@@ -210,6 +210,21 @@ class HtbCtfCredsBackend(Backend):
     async def fetch_all_challenges(self) -> list[dict[str, Any]]:
         return await self.fetch_challenge_stubs()
 
+    async def _refresh_challenge_state(self, cid: int) -> dict[str, Any] | None:
+        """Re-fetch the event catalog and return the raw challenge dict
+        for `cid`. Used by container-spawn polling — the per-challenge
+        docker_online / docker_ports / hostname fields update inline on
+        each fetch. There's no single-challenge status endpoint on this
+        API surface."""
+        body = await self._get_json(f"/api/ctfs/{self.event_id}")
+        event = body.get("data", body) if isinstance(body, dict) else body
+        if not isinstance(event, dict):
+            return None
+        for c in event.get("challenges") or []:
+            if c.get("id") == cid:
+                return c
+        return None
+
     async def fetch_solved_names(self) -> set[str]:
         await self.fetch_challenge_stubs()
         return {
@@ -291,29 +306,41 @@ class HtbCtfCredsBackend(Backend):
         return None
 
     async def _start_docker(self, name: str, cid: int, stub: dict[str, Any]) -> str:
+        """POST /api/challenges/containers/start, then poll the event
+        catalog for the challenge to flip docker_online + populate
+        docker_ports + hostname. The start endpoint just returns
+        `{"message": "Container starting."}` — no inline state — so the
+        catalog re-fetch is how we discover when the box is ready and
+        where it lives. Single-challenge status endpoints don't exist
+        on this API surface (verified by SPA bundle grep)."""
         resp = await self._request(
             "POST", "/api/challenges/containers/start",
-            json={"challenge_id": cid},
+            json={"id": cid},
         )
         if resp.status_code not in (200, 201):
             raise RuntimeError(
                 f"HTB creds containers/start({name}): HTTP {resp.status_code} {resp.text[:200]}"
             )
-        body = resp.json()
-        ip, ports = self._extract_ip_ports(body)
 
-        deadline = asyncio.get_event_loop().time() + 30.0
-        while (not ip or not ports) and asyncio.get_event_loop().time() < deadline:
-            await asyncio.sleep(2.0)
-            try:
-                status = await self._get_json(f"/api/challenges/containers/{cid}")
-                ip, ports = self._extract_ip_ports(status)
-            except Exception as e:
-                logger.warning("HTB creds container_status(%s): %s", name, e)
-                break
+        ip = ""
+        ports: list[int] = []
+        deadline = asyncio.get_event_loop().time() + 60.0
+        while asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(3.0)
+            ch = await self._refresh_challenge_state(cid)
+            if not ch:
+                continue
+            online = ch.get("docker_online")
+            host = ch.get("hostname") or ""
+            raw_ports = ch.get("docker_ports") or []
+            if online and host and raw_ports:
+                ip = str(host)
+                ports = [int(p) for p in raw_ports if isinstance(p, (int, str)) and str(p).isdigit()]
+                if ports:
+                    break
         if not ip or not ports:
             raise RuntimeError(
-                f"HTB creds {name}: container never reported IP+ports within 30s"
+                f"HTB creds {name}: container never reported IP+ports within 60s"
             )
 
         category = (stub.get("category") or "").lower()
@@ -425,7 +452,7 @@ class HtbCtfCredsBackend(Backend):
         else:
             try:
                 await self._request("POST", "/api/challenges/containers/stop",
-                                    json={"challenge_id": cid})
+                                    json={"id": cid})
             except Exception as e:
                 logger.warning("HTB creds container stop(%s): %s", challenge_name, e)
         self._live_containers.pop(challenge_name, None)
