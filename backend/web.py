@@ -717,16 +717,20 @@ pre.log {
 }
 
 .quota-banner {
-  display: none;
-  margin: 0 auto 8px;
-  max-width: 1600px;
+  /* Span both grid columns of <main> so the banner sits on its own row
+     above the board, regardless of which sibling banners are shown. Without
+     this, a single visible banner is auto-placed into col 1 of row 1 and
+     fights the board for that cell — making it stretch to full main
+     height. */
+  grid-column: 1 / -1;
+  margin: 0 0 8px;
   padding: 6px 12px;
   border-radius: var(--md-shape-sm);
   background: var(--md-sys-color-error-container);
   color: var(--md-sys-color-on-error-container);
   border: 1px solid var(--md-sys-color-error);
   font-size: 12.5px; font-weight: 500;
-  display: flex;            /* see :not() below — first 'display' wins is overridden */
+  display: flex;
   align-items: center;
   gap: 8px;
   box-shadow: var(--md-elev-1);
