@@ -63,6 +63,23 @@ def _slugify(name: str) -> str:
     return s or "challenge"
 
 
+# HTB CTF event challenge filenames usually carry a category prefix
+# (e.g. "hardware_its_oops_pm.zip", "crypto_dynastic.zip"). The platform
+# doesn't expose category names alongside the numeric category_id, so
+# this is the cleanest signal we have. Fall back to the id otherwise.
+_CATEGORY_FROM_FILENAME_RE = re.compile(r"^([a-zA-Z][a-zA-Z\- ]+?)_", re.UNICODE)
+
+
+def _infer_category(filename: str, cat_id: Any) -> str:
+    if filename:
+        m = _CATEGORY_FROM_FILENAME_RE.match(filename)
+        if m:
+            return m.group(1).strip().title()
+    if cat_id is not None:
+        return f"category_{cat_id}"
+    return "Unknown"
+
+
 class McpError(RuntimeError):
     """Wraps a JSON-RPC error response from the MCP server."""
 
@@ -322,11 +339,12 @@ class HtbCtfMcpBackend(Backend):
         for c in challenges:
             name = c.get("name") or ""
             slug = _slugify(name)
+            filename = c.get("filename") or ""
             stub = {
                 "id": c.get("id"),
                 "name": slug,
                 "title": name,
-                "category": c.get("category") or c.get("category_name") or "Unknown",
+                "category": _infer_category(filename, c.get("challenge_category_id")),
                 "value": int(c.get("points") or c.get("value") or 0),
                 "solves": int(c.get("solves") or 0),
                 "type": "standard",
@@ -335,17 +353,13 @@ class HtbCtfMcpBackend(Backend):
                 "_htb_mcp": {
                     "id": c.get("id"),
                     "difficulty": c.get("difficulty") or "",
-                    "has_container": bool(
-                        c.get("has_docker")
-                        or c.get("docker")
-                        or c.get("has_container")
-                    ),
-                    "has_download": bool(
-                        c.get("file_name")
-                        or c.get("download")
-                        or c.get("has_download")
-                    ),
-                    "file_name": c.get("file_name") or "",
+                    # HTB returns hasDocker as int 0/1/null; bool() handles all.
+                    "has_container": bool(c.get("hasDocker")),
+                    "has_download": bool(filename),
+                    "file_name": filename,
+                    # Pre-cached solved-state from the catalog payload —
+                    # saves a separate retrieve_ctf_solves_for_team call.
+                    "solved": bool(c.get("solved")),
                 },
             }
             self._challenges_by_name[slug] = stub
@@ -358,30 +372,16 @@ class HtbCtfMcpBackend(Backend):
         return await self.fetch_challenge_stubs()
 
     async def fetch_solved_names(self) -> set[str]:
-        """retrieve_ctf_solves_for_team filtered by our AI team's id."""
-        team_id = await self._get_team_id()
-        content = await self._call_tool(
-            "retrieve_ctf_solves_for_team",
-            {"ctf_id": self.event_id, "team_id": team_id},
-        )
-        body = self._content_json(content) or []
-        # Hydrate stubs cache (cheap if already populated) so we can
-        # map challenge_id → slug.
-        if not self._challenges_by_name:
-            await self.fetch_challenge_stubs()
-        id_to_slug = {
-            s["_htb_mcp"]["id"]: s["name"]
-            for s in self._challenges_by_name.values()
+        """Read the inline `solved` flag baked into each challenge by
+        retrieve_ctf — saves a separate retrieve_ctf_solves_for_team
+        tool call (and stays under the rate budget when the poller hits
+        this every minute). Fresh-fetches stubs every call so a flag
+        submitted by another tool elsewhere shows up promptly."""
+        await self.fetch_challenge_stubs()
+        return {
+            name for name, stub in self._challenges_by_name.items()
+            if stub["_htb_mcp"].get("solved")
         }
-        solved: set[str] = set()
-        if isinstance(body, list):
-            for entry in body:
-                if not isinstance(entry, dict):
-                    continue
-                cid = entry.get("challenge_id") or entry.get("challenge", {}).get("id")
-                if cid and cid in id_to_slug:
-                    solved.add(id_to_slug[cid])
-        return solved
 
     # ---------- submission ----------
 
@@ -415,11 +415,13 @@ class HtbCtfMcpBackend(Backend):
 
         msg_lower = msg.lower()
         if "already" in msg_lower and ("solved" in msg_lower or "submitted" in msg_lower):
+            stub["_htb_mcp"]["solved"] = True
             return SubmitResult(
                 "already_solved", msg,
                 f'ALREADY SOLVED — flag previously accepted ({msg})',
             )
         if success:
+            stub["_htb_mcp"]["solved"] = True
             return SubmitResult(
                 "correct", msg or "accepted",
                 f'CORRECT — accepted by HTB ({msg})',
@@ -498,13 +500,16 @@ class HtbCtfMcpBackend(Backend):
 
     @staticmethod
     def _extract_ip_ports(body: Any) -> tuple[str, list[int]]:
-        """Pull (ip, ports) out of the various shapes start_container /
-        container_status responses come in. Defensive against schema
-        drift — looks at any field whose name implies host/port."""
+        """Pull (ip, ports) out of start_container / container_status
+        responses. HTB returns `{status, hostname, ports}` — the
+        primary field is `hostname` despite the name, it's the IPv4
+        the user routes to. Other field names checked for forward
+        compatibility."""
         if not isinstance(body, dict):
             return "", []
         ip = (
-            body.get("ip")
+            body.get("hostname")
+            or body.get("ip")
             or body.get("host")
             or body.get("address")
             or (body.get("data") or {}).get("ip", "")
