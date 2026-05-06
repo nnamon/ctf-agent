@@ -123,7 +123,14 @@ cfr                Alternative Java decompiler — try when jadx mangles
 fernflower         JetBrains' decompiler — strong on lambdas / streams /
                    modern Java. fernflower input.jar /outdir/
                    Output is .java files in <outdir>/<input-basename>/.
+                   (Wraps /opt/jdk-21 since fesh0r's tip needs JDK 21+.)
+procyon            Fourth-fallback Java decompiler — sometimes handles
+                   edge cases (lambdas, switch-on-string) jadx + cfr +
+                   fernflower all mishandle. procyon foo.jar > out.java
 javap              JVM bytecode disassembler. javap -c -p ClassName, javap -v -p Class.
+                   (System default JDK is 11; alternates at /opt/jdk-17,
+                   /opt/jdk-21 for tools/code that need newer language
+                   features. Run as `/opt/jdk-21/bin/javap ...` etc.)
 uncompyle6         Python <=3.8 .pyc decompiler. uncompyle6 file.pyc
 decompyle3         Python 3.7-3.8 .pyc decompiler (alternative).
 pycdc              Python .pyc decompiler that handles 3.10+. pycdc file.pyc

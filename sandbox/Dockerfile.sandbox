@@ -55,6 +55,10 @@ RUN apt-get update && apt-get install -y \
     sqlite3 \
     # Misc
     git jq zip unzip ca-certificates ncurses-term \
+    # Archive / installer unpackers (p7zip handles 7z/zip/xz/gz/cab and
+    # often rar; the others cover formats it doesn't). innoextract is
+    # NOT in jammy/arm64 — installer-extraction relies on 7z fallback.
+    p7zip-full cabextract unrar \
     # DNS / whois recon (web/forensics challenges)
     dnsutils whois \
     # Cross-arch debugging (ARM/MIPS/PPC pwnables under qemu-user)
@@ -188,6 +192,23 @@ RUN ARCH=$(dpkg --print-architecture) \
     && rm /tmp/ffuf.tgz \
     && ffuf -V | head -1
 
+# ── Additional JDKs (Adoptium Temurin tarballs) ─────────────────────────────
+# jammy/arm64 only ships openjdk-11 in apt; we add 17 and 21 as side-installs
+# at /opt/jdk-NN/ so build tools that need a newer JDK (e.g. Fernflower
+# requires 21+ for source-release 21) can point JAVA_HOME at them without
+# disturbing the system default. Download URLs use Adoptium's "latest" API
+# so this stays current as Temurin ships LTS updates.
+RUN ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/aarch64/') \
+    && for v in 17 21; do \
+         mkdir -p /opt/jdk-${v} \
+         && curl -fsSL "https://api.adoptium.net/v3/binary/latest/${v}/ga/linux/${ARCH}/jdk/hotspot/normal/eclipse?project=jdk" \
+              -o /tmp/jdk-${v}.tar.gz \
+         && tar -xzf /tmp/jdk-${v}.tar.gz -C /opt/jdk-${v} --strip-components=1 \
+         && rm /tmp/jdk-${v}.tar.gz \
+         && /opt/jdk-${v}/bin/java -version \
+         || echo "JDK ${v} tarball install failed (non-fatal — JDK 11 still default)"; \
+       done
+
 # ── jadx (Java/APK decompiler) ────────────────────────────────────────────────
 RUN curl -sSL "https://github.com/skylot/jadx/releases/download/v1.5.0/jadx-1.5.0.zip" \
        -o /tmp/jadx.zip \
@@ -205,19 +226,28 @@ RUN curl -fsSL "https://www.benf.org/other/cfr/cfr-0.152.jar" -o /opt/cfr.jar \
     && chmod +x /usr/local/bin/cfr \
     || echo "cfr download failed (non-fatal — jadx still works)"
 
+# ── Procyon (older Java decompiler — fourth fallback for tricky cases) ──────
+RUN curl -fsSL "https://github.com/mstrobel/procyon/releases/download/v0.6.0/procyon-decompiler-0.6.0.jar" \
+       -o /opt/procyon.jar \
+    && printf '#!/bin/bash\nexec java -jar /opt/procyon.jar "$@"\n' > /usr/local/bin/procyon \
+    && chmod +x /usr/local/bin/procyon \
+    || echo "procyon download failed (non-fatal — jadx + cfr + fernflower still cover most cases)"
+
 # ── Fernflower (JetBrains' decompiler — strong on lambdas + modern Java) ─────
-# No pre-built jar release; build from the fesh0r mirror via gradle (~30s).
-# Wrapper invocation: `fernflower <input.jar|.class> <outdir>`.
+# No pre-built jar release; build from the fesh0r mirror via gradle (~25s).
+# fesh0r's tip targets `source-release: 21`, so the build itself needs
+# JDK 21 (we install it at /opt/jdk-21 above). Runtime can use any JDK 17+
+# but we point the wrapper at JDK 21 for parity with the build environment.
 RUN git clone --depth=1 https://github.com/fesh0r/fernflower /tmp/fernflower \
     && cd /tmp/fernflower \
-    && ./gradlew --no-daemon build \
+    && JAVA_HOME=/opt/jdk-21 ./gradlew --no-daemon build \
     && mkdir -p /opt/fernflower \
     && cp build/libs/fernflower.jar /opt/fernflower/ \
     && cd / && rm -rf /tmp/fernflower /root/.gradle \
-    && printf '#!/bin/bash\nexec java -jar /opt/fernflower/fernflower.jar "$@"\n' \
+    && printf '#!/bin/bash\nexec /opt/jdk-21/bin/java -jar /opt/fernflower/fernflower.jar "$@"\n' \
        > /usr/local/bin/fernflower \
     && chmod +x /usr/local/bin/fernflower \
-    || echo "fernflower build failed (non-fatal — jadx + cfr still cover most cases)"
+    || echo "fernflower build failed (non-fatal — jadx + cfr + procyon still cover most cases)"
 
 # ── Wordlists (small subset of SecLists for ffuf/dirbusting) ──────────────────
 RUN mkdir -p /opt/wordlists \
@@ -466,7 +496,8 @@ RUN set +e; \
                sherlock-project photon \
                prowler gpp-decrypt \
                jefferson ubi_reader \
-               adversarial-robustness-toolbox garak; do \
+               adversarial-robustness-toolbox garak \
+               unipacker; do \
       python3 -m pip install --no-cache-dir "$pkg" || echo "$pkg install failed (non-fatal)"; \
     done; \
     # enum4linux-ng has no pypi release, install from git
@@ -668,6 +699,10 @@ ENV PATH="/root/.dotnet/tools:$PATH"
 RUN dotnet tool install -g ilspycmd \
       || dotnet tool install -g ilspycmd --version 8.2.0.7535 \
       || echo "ilspycmd install failed (non-fatal — Ghidra/dnSpy alternatives available)"
+
+# de4dot was considered but `de4dot.cex` is not on NuGet and the
+# distributed pre-builts target Windows/Mono, which we don't ship.
+# Skipping until a clean cross-platform install path appears.
 
 # ── ysoserial (Java deserialization gadget chains) ──────────────────────────
 RUN curl -fsSL \
