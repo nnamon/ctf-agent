@@ -173,6 +173,10 @@ class CodexCoordinator:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            # See codex_solver.start() — bump StreamReader buffer past
+            # 64 KB so large JSON-RPC payloads don't trigger a fatal
+            # LimitOverrunError in the read loop.
+            limit=16 * 1024 * 1024,
         )
         self._reader_task = asyncio.create_task(self._read_loop())
 

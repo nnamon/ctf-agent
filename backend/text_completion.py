@@ -180,6 +180,10 @@ async def _codex_attempt(model: str, system: str, user: str, timeout_s: int) -> 
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        # See codex_solver.start() — bump StreamReader buffer past
+        # 64 KB so large JSON-RPC payloads don't trigger a fatal
+        # LimitOverrunError in the read loop.
+        limit=16 * 1024 * 1024,
     )
 
     pending: dict[int, asyncio.Future] = {}

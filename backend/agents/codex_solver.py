@@ -330,6 +330,14 @@ class CodexSolver:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # asyncio's StreamReader defaults to a 64 KB buffer; codex
+            # MCP routinely sends larger JSON-RPC payloads (encrypted
+            # reasoning blobs + tool results combine past 64 KB), and
+            # readline() then raises LimitOverrunError which crashes the
+            # read loop AND propagates up through the swarm task to take
+            # down the coordinator. 16 MB is comfortably above any single
+            # line we've observed.
+            limit=16 * 1024 * 1024,
         )
         self._proc_started_at = time.time()
 
@@ -521,7 +529,28 @@ class CodexSolver:
         """Read JSON-RPC messages: responses, notifications, and server requests."""
         assert self._proc and self._proc.stdout
         while True:
-            line = await self._proc.stdout.readline()
+            try:
+                line = await self._proc.stdout.readline()
+            except (ValueError, asyncio.LimitOverrunError) as e:
+                # Defence-in-depth: if a JSON-RPC line ever exceeds the
+                # StreamReader buffer (we bump it to 16 MB at spawn so
+                # this is unlikely), don't let the exception propagate
+                # up the swarm task and kill the coordinator. Treat as
+                # transport-fatal and unwind cleanly via turn_done.
+                logger.error(
+                    "[%s] read_loop bailing on %s: %s",
+                    self.agent_name, type(e).__name__, str(e)[:200],
+                )
+                try:
+                    self.tracer.event(
+                        "read_loop_error",
+                        error_type=type(e).__name__,
+                        error=str(e)[:300],
+                    )
+                except Exception:
+                    pass
+                self._turn_done.set()
+                break
             if not line:
                 self._turn_done.set()
                 break
