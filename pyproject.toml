@@ -26,6 +26,7 @@ ctf-session = "backend.cli_session:session_main"
 ctf-tokens = "backend.cli_tokens:tokens_main"
 ctf-pull = "backend.cli_pull:pull"
 ctf-rebuild-writeups = "backend.cli_rebuild_writeups:main"
+ctf-review = "backend.cli_review:review_main"
 
 [build-system]
 requires = ["hatchling"]
