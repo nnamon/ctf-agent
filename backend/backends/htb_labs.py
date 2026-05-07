@@ -293,7 +293,16 @@ class HtbLabsBackend(Backend):
                 "already_solved", msg,
                 f'ALREADY SOLVED — "{flag}" was previously accepted',
             )
-        if success:
+        # Defensive fallback for the same response-shape drift we hit on
+        # the sister ctf.hackthebox.com API (commit b297c90): some 200-OK
+        # responses arrive without `success: true` even when the message
+        # body says "Correct flag!". Treat any positive-verb message that
+        # isn't an "incorrect" message as a win.
+        message_says_correct = (
+            ("correct" in msg_lower and "incorrect" not in msg_lower)
+            or "accepted" in msg_lower
+        )
+        if success or message_says_correct:
             # Flip cached solved-flag so a follow-up fetch_solved_names
             # reflects the new state without waiting for the poller's
             # next /list refresh — important when the coord uses solved

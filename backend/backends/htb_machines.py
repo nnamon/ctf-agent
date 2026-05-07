@@ -374,7 +374,16 @@ class HtbMachinesBackend(Backend):
                 "already_solved", msg,
                 f'ALREADY OWNED — flag previously accepted by HTB ({msg})',
             )
-        if success:
+        # Defensive fallback (see commit b297c90, htb_labs equivalent):
+        # some 200-OK responses come back with the right message but no
+        # `success: true`. Accept positive-verb messages too. The
+        # wrong-half cross-check below still runs to catch a user-flag
+        # submitted to the root challenge or vice versa.
+        message_says_correct = (
+            ("correct" in msg_lower and "incorrect" not in msg_lower)
+            or "accepted" in msg_lower
+        )
+        if success or message_says_correct:
             # HTB's response says which half it credited. If it doesn't
             # match what the challenge expected, the flag landed on the
             # sibling — surface that explicitly so the coord knows to
