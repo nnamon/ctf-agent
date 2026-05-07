@@ -344,8 +344,47 @@ async def do_check_swarm_status(deps: CoordinatorDeps, challenge_name: str) -> s
 
 
 async def do_submit_flag(deps: CoordinatorDeps, challenge_name: str, flag: str) -> str:
+    """Coordinator-level flag submission.
+
+    When a swarm is active for this challenge, route the submission
+    through swarm.try_submit_flag so the swarm-level state (confirmed_flag,
+    winner, cancel_event) is updated atomically with the AttemptLog
+    insert. Otherwise the swarm's _run_and_cleanup task would persist
+    status='cancelled' for what was actually a coord-driven win:
+    AttemptLog has the correct row, but challenge_solves shows
+    `cancelled` with no winner_spec. Observed live on debug/flagcasino/
+    an-unusual-sighting in the htb-ctf-creds run on 2026-05-07.
+    """
     if deps.no_submit:
         return f'DRY RUN — would submit "{flag.strip()}" for {challenge_name}'
+
+    swarm = deps.swarms.get(challenge_name)
+    if swarm is not None and not swarm.cancel_event.is_set():
+        try:
+            display, is_confirmed = await swarm.try_submit_flag(flag, "coordinator")
+            if is_confirmed:
+                # try_submit_flag set swarm.confirmed_flag for us; also
+                # synthesize a winner result and stop the solver tasks
+                # so swarm.run() returns FLAG_FOUND instead of None and
+                # _run_and_cleanup persists status='flag_found'.
+                if swarm.winner is None:
+                    from backend.solver_base import FLAG_FOUND, SolverResult
+                    swarm.winner = SolverResult(
+                        flag=flag.strip(),
+                        status=FLAG_FOUND,
+                        findings_summary="Submitted via coordinator's submit_flag tool.",
+                        step_count=0,
+                        cost_usd=0.0,
+                        log_path="",
+                    )
+                    swarm.winner_spec = "coordinator"
+                swarm.kill()
+            return display
+        except Exception as e:
+            return f"submit_flag error: {e}"
+
+    # No active swarm — fall back to direct backend submission. AttemptLog
+    # still records the result, just no swarm summary row to update.
     try:
         result = await deps.ctfd.submit_flag(challenge_name, flag)
         return result.display
