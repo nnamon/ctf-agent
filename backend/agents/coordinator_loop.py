@@ -412,6 +412,12 @@ async def _auto_spawn_one(deps: CoordinatorDeps, challenge_name: str) -> None:
     active = sum(1 for t in deps.swarm_tasks.values() if not t.done())
     if active >= deps.max_concurrent_challenges:
         return
+    # Short-circuit when upstream is rate-limited. do_spawn_swarm would
+    # refuse anyway, but auto_spawn_unsolved iterates ALL unsolved
+    # challenges every tick — burning a no-op call per challenge across
+    # a long limit window is just log spam.
+    if (deps.usage_limit or {}).get("hit"):
+        return
     try:
         from backend.agents.coordinator_core import do_spawn_swarm
         result = await do_spawn_swarm(deps, challenge_name)

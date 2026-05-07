@@ -100,6 +100,21 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
             "pattern. Pick a different challenge."
         )
 
+    # Usage-limit guard. When the upstream ChatGPT subscription is
+    # rate-limited (deps.usage_limit["hit"]=True), every solver turn
+    # fails with usageLimitExceeded — spawning new swarms only burns
+    # docker containers and produces failed-turn noise. Refuse here
+    # so the coord LLM gets a clear "wait for reset" message instead
+    # of the previous behaviour (410 failed turns + 28 leaked
+    # containers in 4 minutes during the 2026-05-07 incident).
+    if (deps.usage_limit or {}).get("hit"):
+        resets = deps.usage_limit.get("resets_at") or "(unknown)"
+        return (
+            f"Refused: ChatGPT subscription is rate-limited "
+            f"(resets at {resets}). New spawns just burn containers — "
+            f"wait for the reset before trying again."
+        )
+
     # Atomic capacity admission. The Codex coordinator routinely
     # dispatches a flood of parallel spawn_swarm tool calls in one turn
     # ("spawn for all 30 unsolved at once") — without this lock the
