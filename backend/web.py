@@ -767,6 +767,13 @@ table.model-breakdown tr.winner-row td {
   0%, 100% { box-shadow: 0 0 0 2px var(--md-sys-color-error), var(--md-elev-2); }
   50%      { box-shadow: 0 0 0 2px rgba(242,184,181,.5), var(--md-elev-3); }
 }
+button.quota-edit {
+  background: transparent; border: none; cursor: pointer;
+  color: var(--md-sys-color-on-surface-variant);
+  padding: 0 4px; font-size: 14px; line-height: 1;
+  transition: color 100ms;
+}
+button.quota-edit:hover { color: var(--md-sys-color-primary); }
 
 .quota-banner {
   /* Span both grid columns of <main> so the banner sits on its own row
@@ -1018,6 +1025,8 @@ table.model-breakdown tr.winner-row td {
       <span class="track"><span class="fill" id="hdr-quota-fill" style="width:0%"></span></span>
       <span class="pct mono" id="hdr-quota-text"></span>
     </span>
+    <button class="quota-edit" onclick="editQuota()" title="Edit quota cap"
+            aria-label="Edit quota">⚙</button>
   </div>
   <!-- Live "what's the swarm doing right now" line. Empty when no
        swarm is running. Each chip is clickable and selects the
@@ -1036,10 +1045,10 @@ table.model-breakdown tr.winner-row td {
        once cost.total_usd >= session.quota_usd. Spans the full main
        width so it's the first thing on screen when the cap is hit. -->
   <div class="quota-banner" id="quota-banner" role="alert"
-       title="No new swarms will spawn. Bump quota_usd in session.yml and reload to continue, or kill the coordinator.">
+       title="In-flight solvers paused at next turn boundary. New spawns refused. Use the ⚙ next to the quota progress bar in the app bar to raise the cap.">
     <span class="icon">⚠</span>
     <div class="body">
-      <span class="strong">Quota exhausted.</span>
+      <span class="strong">Quota exhausted — solvers paused.</span>
       <span id="quota-banner-figures"></span>
     </div>
   </div>
@@ -1700,6 +1709,37 @@ async function doMsgChal(e, nameEnc) {
     body: JSON.stringify({message: `[${challenge}] ${text}`})});
   input.value = '';
   return false;
+}
+
+async function editQuota() {
+  // Inline quota edit. Operator types a new cap (USD); the coord
+  // applies it on the next periodic tick (~60s) and immediately
+  // toggles the run/pause state for in-flight solvers. 0 / blank
+  // removes the cap.
+  const cur = (latestStatus && latestStatus.session && latestStatus.session.quota_usd) || '';
+  const raw = window.prompt(
+    'New quota cap (USD). 0 or blank = no cap. Pause/resume kicks in '
+    + 'within ~60s for in-flight solvers.',
+    cur ? String(cur) : ''
+  );
+  if (raw === null) return;
+  const val = parseFloat(raw) || 0;
+  try {
+    const r = await fetch('/api/quota', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({quota_usd: val})});
+    const d = await r.json();
+    if (d.error) {
+      alert('Failed: ' + d.error);
+    } else {
+      // Force a status refresh so the banner / progress bar update
+      // immediately, not on the next 5s poll.
+      const sr = await fetch('/api/status');
+      if (sr.ok) applyStatus(await sr.json());
+    }
+  } catch (e) {
+    alert('Failed: ' + e);
+  }
 }
 
 async function killSwarm(nameEnc) {
@@ -2730,6 +2770,60 @@ async def _writeup(request: web.Request) -> web.Response:
     return web.json_response({"text": text, "path": str(path)})
 
 
+async def _quota(request: web.Request) -> web.Response:
+    """Dynamically edit settings.quota_usd at runtime.
+
+    Body: {"quota_usd": <float>} — set new cap. Special value 0 or
+    negative removes the cap entirely. The coord's periodic tick
+    re-evaluates the run/pause state on the next interval (~60s);
+    we also toggle here for an immediate response so the dashboard
+    banner doesn't lag.
+    """
+    deps = request.app["deps"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON"}, status=400)
+    raw = body.get("quota_usd")
+    if raw is None:
+        return web.json_response({"error": "quota_usd required"}, status=400)
+    try:
+        new_q = float(raw)
+    except (TypeError, ValueError):
+        return web.json_response({"error": "quota_usd must be a number"}, status=400)
+    new_q = None if new_q <= 0 else new_q
+    prev = getattr(deps.settings, "quota_usd", None)
+    deps.settings.quota_usd = new_q
+
+    # Immediate run/pause toggle so the operator sees instant feedback.
+    cost_tracker = request.app.get("cost_tracker")
+    if cost_tracker is None:
+        # fallback: dig out of any active swarm
+        for s in deps.swarms.values():
+            cost_tracker = getattr(s, "cost_tracker", None)
+            if cost_tracker is not None:
+                break
+    if cost_tracker is not None:
+        spent = cost_tracker.total_cost_usd
+        if new_q is None or spent < new_q:
+            if not cost_tracker.run_event.is_set():
+                cost_tracker.run_event.set()
+        else:
+            if cost_tracker.run_event.is_set():
+                cost_tracker.run_event.clear()
+
+    if deps.event_hub:
+        deps.event_hub.broadcast(
+            "quota_updated", challenge="",
+            text=f"quota: ${prev or '∞'} → ${new_q or '∞'}",
+        )
+    return web.json_response({
+        "quota_usd": new_q,
+        "previous_quota_usd": prev,
+        "spent_usd": cost_tracker.total_cost_usd if cost_tracker else None,
+    })
+
+
 async def _solves(request: web.Request) -> web.Response:
     """Return persisted swarm-completion summaries for a challenge.
 
@@ -2879,11 +2973,16 @@ async def _spawn(request: web.Request) -> web.Response:
 
 # ── App factory + lifecycle ─────────────────────────────────────────────────
 
-def build_app(deps: Any, run_id: str) -> web.Application:
+def build_app(deps: Any, run_id: str, cost_tracker: Any = None) -> web.Application:
     app = web.Application()
     app["deps"] = deps
     app["run_id"] = run_id
     app["hub"] = EventHub()
+    # Stash the shared CostTracker so /api/quota can toggle the
+    # run_event without scanning deps.swarms (which is empty when no
+    # swarm is currently active). deps.cost_tracker would be cleaner
+    # but isn't a current field on CoordinatorDeps.
+    app["cost_tracker"] = cost_tracker
     app.router.add_get("/", _index)
     app.router.add_get("/writeups", _writeups_page)
     app.router.add_get("/api/status", _status)
@@ -2891,6 +2990,7 @@ def build_app(deps: Any, run_id: str) -> web.Application:
     app.router.add_get("/api/logs/{chal}/{model}", _logs)
     app.router.add_get("/api/writeup/{chal}", _writeup)
     app.router.add_get("/api/solves/{chal}", _solves)
+    app.router.add_post("/api/quota", _quota)
     app.router.add_get("/api/writeups", _writeups_list)
     app.router.add_post("/api/msg", _msg)
     app.router.add_post("/api/swarms/{chal}/kill", _kill_swarm)
@@ -2906,6 +3006,7 @@ async def start_dashboard(
     run_id: str,
     port: int = 13337,
     host: str = "0.0.0.0",
+    cost_tracker: Any = None,
 ) -> tuple[web.AppRunner, int]:
     """Start the dashboard. Returns (runner, actual_port).
 
@@ -2920,7 +3021,7 @@ async def start_dashboard(
 
     Caller is responsible for `await runner.cleanup()` on shutdown.
     """
-    app = build_app(deps, run_id)
+    app = build_app(deps, run_id, cost_tracker=cost_tracker)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host=host, port=port)

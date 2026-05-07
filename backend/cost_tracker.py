@@ -147,6 +147,13 @@ class AgentUsage:
     cost_usd: float = 0.0
 
 
+def _make_set_event() -> "asyncio.Event":
+    import asyncio
+    e = asyncio.Event()
+    e.set()
+    return e
+
+
 @dataclass
 class CostTracker:
     by_agent: dict[str, AgentUsage] = field(default_factory=dict)
@@ -159,6 +166,16 @@ class CostTracker:
     # dashboard / quota check sees the full session-to-date cost even
     # after a coordinator restart.
     session_carryover_usd: float = 0.0
+    # Set when solvers are PERMITTED to take new turns; cleared when
+    # quota is hit. Swarms `await run_event.wait()` between turns so an
+    # in-flight solver halts at the next safe boundary instead of
+    # blowing past quota by 7%+ (observed on htb-ctf-mcp 2026-05-07:
+    # spent $53.47 of $50 because pre-this-commit there was no halt
+    # mechanism for already-running swarms — only new spawns blocked).
+    # The coord toggles this in its periodic tick based on the current
+    # spend vs settings.quota_usd, so dynamic edits take effect within
+    # one status_interval (default 60s).
+    run_event: Any = field(default_factory=_make_set_event)
 
     @classmethod
     def for_session(cls, settings: Any) -> "CostTracker":

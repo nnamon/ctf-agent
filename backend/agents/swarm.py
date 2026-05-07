@@ -282,6 +282,27 @@ class ChallengeSwarm:
         await solver.start()
 
         while not self.cancel_event.is_set():
+            # Quota pause gate. The coord clears cost_tracker.run_event
+            # whenever total spend ≥ settings.quota_usd; we wait here
+            # between turns so already-running solvers halt at the next
+            # safe boundary instead of blowing past quota. The wait is
+            # bounded so cancel_event still wins within ~10s.
+            run_event = getattr(self.cost_tracker, "run_event", None)
+            if run_event is not None and not run_event.is_set():
+                logger.info(
+                    f"[{self.meta.name}/{model_spec}] paused on quota — "
+                    "waiting for run_event"
+                )
+                while (not run_event.is_set()) and (not self.cancel_event.is_set()):
+                    try:
+                        await asyncio.wait_for(run_event.wait(), timeout=10.0)
+                    except asyncio.TimeoutError:
+                        continue
+                if self.cancel_event.is_set():
+                    break
+                logger.info(
+                    f"[{self.meta.name}/{model_spec}] quota cleared — resuming"
+                )
             result = await solver.run_until_done_or_gave_up()
 
             # Only broadcast useful findings — skip errors and broken solvers

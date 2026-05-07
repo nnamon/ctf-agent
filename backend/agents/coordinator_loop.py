@@ -131,6 +131,7 @@ async def run_event_loop(
     try:
         dash_runner, dash_port = await start_dashboard(
             deps, RUN_ID, port=deps.msg_port, host=deps.msg_host,
+            cost_tracker=cost_tracker,
         )
         deps.event_hub = dash_runner.app["hub"]
     except OSError as e:
@@ -278,6 +279,40 @@ async def run_event_loop(
                 except Exception as e:
                     logger.warning("usage_log periodic flush failed: %s", e)
                 from backend.agents.coordinator_core import _is_skipped
+
+                # Quota pause/unpause toggle. cost_tracker.run_event gates
+                # the per-turn loop in every active swarm — clearing it
+                # halts already-running solvers at the next safe boundary;
+                # setting it resumes them. Keeps the coord-LLM-facing
+                # `quota_exceeded` event consistent with the actual run
+                # state instead of just blocking new spawns.
+                quota_cap = getattr(deps.settings, "quota_usd", None)
+                if quota_cap is not None:
+                    spent_now = cost_tracker.total_cost_usd
+                    over = spent_now >= quota_cap
+                    was_running = cost_tracker.run_event.is_set()
+                    if over and was_running:
+                        cost_tracker.run_event.clear()
+                        logger.info(
+                            "Quota hit ($%.2f of $%.2f) — pausing all solvers",
+                            spent_now, quota_cap,
+                        )
+                        if deps.event_hub:
+                            deps.event_hub.broadcast(
+                                "quota_paused", challenge="",
+                                text=f"paused at ${spent_now:.2f} / ${quota_cap:.2f}",
+                            )
+                    elif (not over) and (not was_running):
+                        cost_tracker.run_event.set()
+                        logger.info(
+                            "Quota cleared ($%.2f of $%.2f) — resuming solvers",
+                            spent_now, quota_cap,
+                        )
+                        if deps.event_hub:
+                            deps.event_hub.broadcast(
+                                "quota_unpaused", challenge="",
+                                text=f"resumed at ${spent_now:.2f} / ${quota_cap:.2f}",
+                            )
 
                 # Retire long-killed swarms so the LLM stops "remembering"
                 # them in active_swarms snapshots — without this, deprioritised
