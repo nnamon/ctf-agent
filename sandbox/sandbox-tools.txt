@@ -105,12 +105,20 @@ yara               Pattern matcher (CLI). yara rules.yar target/ -r
 ghidra / ghidra-headless
                    See BINARY ANALYSIS. analyzeHeadless ... -postScript Decompile.java.
                    Also via pyghidra (GHIDRA_INSTALL_DIR is set).
-r2 + r2ghidra      radare2 with the Ghidra plugin loaded. From inside r2:
-                     r2 ./binary
-                     [0x...]> aaa            (analyse all)
-                     [0x...]> pdg @ main     (Ghidra-quality decompile)
-                   One-shot: r2 -qc 'aaa; pdg @ main' ./binary
-                   Falls back to r2's native `pdc` if r2ghidra isn't built.
+r2 + r2ghidra +    radare2 with two decompiler plugins loaded.
+r2dec               - r2ghidra (Ghidra-quality C):
+                       r2 ./binary
+                       [0x...]> aaa            (analyse all)
+                       [0x...]> pdg @ main     (decompile via Ghidra)
+                     - r2dec (JS-based pseudo-C):
+                       [0x...]> pdd @ main     (decompile via r2dec)
+                       [0x...]> pdc @ main     (terser pseudo-C)
+                   Try `pdg` first; if output is empty/garbled, switch
+                   to `pdd`. One-shot: r2 -qc 'aaa; pdg @ main' ./binary
+r2pipe (python)    Drive r2 from Python — useful for batch-decompiling
+                   many functions or post-processing output:
+                     import r2pipe; r = r2pipe.open('./binary'); r.cmd('aaa');
+                     out = r.cmd('pdg @ main')
 retdec             Open-source LLVM-based decompiler (amd64 sandboxes only).
                      retdec-decompiler binary -o out.c
                    On arm64 sandboxes use ghidra-headless or r2 pdg instead.
@@ -486,6 +494,18 @@ frida (Python)     Dynamic instrumentation. import frida (CLI also installed).
 scapy              See NETWORK FORENSICS.
 mitmproxy          See WEB PENTESTING (also a Python lib for addons).
 Pillow             Image processing. from PIL import Image
+opencv-python-headless / cv2
+                   Heavier image processing — colour spaces, contours,
+                   bit-plane ops. import cv2; img = cv2.imread('foo.png')
+imageio            Image I/O for unusual formats (TIFF stacks, EXR, GIF
+                   per-frame). import imageio; imageio.imread('foo.gif')
+pypdf / PyPDF2 / pdfplumber / pdfminer.six / fitz (PyMuPDF)
+                   Five overlapping PDF parsers — try in order; coverage
+                   varies by PDF generator. fitz/PyMuPDF is the most
+                   complete (fonts, embedded files, annotations); pdfplumber
+                   is best for table extraction; PyPDF2/pypdf for simple
+                   text + metadata.
+pymysql            MySQL client (pure-Python). import pymysql; pymysql.connect(...)
 pytesseract        Python OCR wrapper. pytesseract.image_to_string(img)
 scipy              Scientific computing. scipy.optimize, scipy.linalg.
 numpy              Numerical arrays. np.frombuffer, np.bitwise_xor.
@@ -520,6 +540,11 @@ qemu-*-static      Run foreign-arch Linux ELFs directly. One static binary per
                    `qemu-i386-static ./binary` with no -L flag needed. The
                    challenge-shipped libc.so.6 (when present in distfiles)
                    takes precedence; for ROP / one_gadget, use that one.
+                   x86_64 sysroot: /opt/x86_64-sysroot mirrors the same
+                   pattern for 64-bit x86 ELFs on the arm64 sandbox.
+                   /lib64/ld-linux-x86-64.so.2 is symlinked into place,
+                   so `./binary` (binfmt) and `qemu-x86_64-static ./binary`
+                   both resolve their interpreter without -L flags.
                    Cross-arch GDB: `qemu-x86_64-static -g 1234 ./binary`,
                    then in another shell: `gdb-multiarch ./binary`,
                    `target remote :1234`. Strace works the same way.
@@ -550,6 +575,7 @@ wine / wine64      Run Windows PE binaries. wine64 file.exe (x86_64 PE),
 - Ghidra is at /opt/ghidra/  (use ghidra / ghidra-headless / analyzeHeadless
   for batch jobs; pyghidra works out of the box — GHIDRA_INSTALL_DIR is set)
 - i386 sysroot at /opt/i386-sysroot/  (32-bit ELFs Just Work via qemu-i386)
+- x86_64 sysroot at /opt/x86_64-sysroot/  (64-bit x86 ELFs Just Work on arm64 sandbox)
 - pwndbg is at /opt/pwndbg/, gef.py at /opt/gef.py
 - YARA rules at /opt/yara-rules/, jwt_tool at /opt/jwt_tool/
 - ysoserial.jar at /opt/ysoserial.jar, ysoserial-net at /opt/ysoserial-net/

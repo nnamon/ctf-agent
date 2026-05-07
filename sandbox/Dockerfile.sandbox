@@ -79,6 +79,10 @@ RUN apt-get update && apt-get install -y \
     nasm \
     llvm \
     python-is-python3 \
+    # Interactive scripting (some pwn challenges drive a remote tty).
+    expect \
+    # Build deps for r2dec (r2pm-installed below) — meson + ninja.
+    ninja-build meson \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Podman (nested containers — run challenge Docker images inside sandbox) ───
@@ -108,6 +112,15 @@ RUN git clone --depth=1 https://github.com/radareorg/radare2 /tmp/r2 \
 RUN r2pm -U \
     && r2pm -ci r2ghidra \
     || echo "r2ghidra install failed (non-fatal — r2 native pdc still works)"
+
+# ── r2dec (JS-based r2 decompiler — distinct from r2ghidra) ─────────────────
+# Provides `pdd` / `pdc` commands, which the LLM frequently reaches for
+# alongside `pdg` (r2ghidra). HTB MCP TryOut traces showed 8 separate
+# "You need to install the plugin with r2pm -ci r2dec" prompts on
+# router-web alone. Cheap to add (depends only on meson + ninja from
+# the apt block above).
+RUN r2pm -ci r2dec \
+    || echo "r2dec install failed (non-fatal — r2ghidra's pdg still works)"
 
 # ── flatter (fast lattice reduction — Keegan Ryan's fork) ────────────────────
 RUN git clone --depth=1 https://github.com/keeganryan/flatter /tmp/flatter \
@@ -159,7 +172,20 @@ RUN pip3 install --no-cache-dir \
     volatility3 \
     PyJWT \
     pyghidra \
-    semgrep
+    semgrep \
+    # r2 driver — let solvers script radare2 from Python instead of
+    # subprocess-shelling. Caught 23 ImportErrors across the MCP TryOut.
+    r2pipe \
+    # PDF parsing for forensics. Five overlapping libs because the
+    # solver doesn't know which is installed and we'd rather be safe.
+    pypdf PyPDF2 pdfplumber pdfminer.six PyMuPDF \
+    # Image processing for stego / image-bound challenges. Headless
+    # variant of opencv (~50MB vs ~150MB; no GUI bindings we'd never
+    # use anyway).
+    opencv-python-headless \
+    imageio \
+    # MySQL client for web/db challenges.
+    pymysql
 
 # ── PyTorch (CPU-only) + Keras ────────────────────────────────────────────────
 RUN pip3 install --no-cache-dir --ignore-installed sympy \
@@ -943,6 +969,37 @@ RUN dpkg --add-architecture i386 \
     && cd / \
     && rm -rf /tmp/i386-debs /var/lib/apt/lists/* \
     && ln -sf /opt/i386-sysroot/lib/ld-linux.so.2 /lib/ld-linux.so.2
+
+# ── x86_64 sysroot ──────────────────────────────────────────────────────────
+# Parallel to the i386 sysroot above, for the much more common case of
+# x86_64 ELFs needing /lib64/ld-linux-x86-64.so.2 to start. Earlier
+# pwnable-{tw,kr} traces showed 30+ "ld-linux-x86-64.so.2: No such file"
+# failures when the agent tried to run a vendored x86_64 binary on the
+# arm64 sandbox.
+#
+# On a linux/amd64 build this block is mostly redundant (the host libc
+# already provides /lib64/ld-linux-x86-64.so.2) — the symlink at the
+# bottom just overwrites it with one pointing at our extracted copy of
+# the same glibc 2.35, which is harmless. The real lift is on arm64
+# builds where there's no native amd64 dynamic linker at all.
+RUN dpkg --add-architecture amd64 \
+    && echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy main" \
+        > /etc/apt/sources.list.d/amd64-sysroot.list \
+    && apt-get update -qq 2>/dev/null || true \
+    && mkdir -p /opt/x86_64-sysroot /tmp/amd64-debs \
+    && cd /tmp/amd64-debs \
+    && apt-get download \
+         libc6:amd64 \
+         libstdc++6:amd64 \
+         libgcc-s1:amd64 \
+         zlib1g:amd64 \
+         libtinfo6:amd64 \
+         libncurses6:amd64 \
+    && for d in *.deb; do dpkg-deb -x "$d" /opt/x86_64-sysroot; done \
+    && cd / \
+    && rm -rf /tmp/amd64-debs /var/lib/apt/lists/* \
+    && mkdir -p /lib64 \
+    && ln -sf /opt/x86_64-sysroot/lib64/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2
 
 # ── Tools reference ──────────────────────────────────────────────────────────
 COPY sandbox/sandbox-tools.txt /tools.txt
