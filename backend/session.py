@@ -136,12 +136,22 @@ class SessionContext:
         return self.root / "runs"
 
     @property
+    def db_path(self) -> Path:
+        """Single SQLite file holding the session's `attempts`, `usage`,
+        `challenge_solves`, and `challenge_solve_models` tables (schema
+        v2). Older sessions split this across `attempts.db` + `usage.db`
+        — see `ctf-migrate` for the v1→v2 unification."""
+        return self.root / "logs" / "session.db"
+
+    # Compat: legacy callers and config defaults reference these names.
+    # Both now resolve to the unified session.db.
+    @property
     def attempt_log_path(self) -> Path:
-        return self.root / "logs" / "attempts.db"
+        return self.db_path
 
     @property
     def usage_log_path(self) -> Path:
-        return self.root / "logs" / "usage.db"
+        return self.db_path
 
     @property
     def session_yml(self) -> Path:

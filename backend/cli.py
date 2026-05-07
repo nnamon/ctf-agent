@@ -66,7 +66,8 @@ def _setup_logging(verbose: bool = False) -> None:
                    "Use ctf-session create/use to manage sessions.")
 @click.option("--attempt-log-path", default=None,
               help="SQLite file persisting flag attempts. Default: "
-                   "sessions/<NAME>/logs/attempts.db (auto-derived from session).")
+                   "sessions/<NAME>/logs/session.db (auto-derived from session — "
+                   "schema v2 unifies attempts + usage in one file).")
 @click.option("--no-attempt-log", is_flag=True,
               help="Disable persistent attempt logging (default: enabled).")
 @click.option("--confirm-flags", "confirm_flags", is_flag=True,

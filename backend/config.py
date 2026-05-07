@@ -39,8 +39,9 @@ class Settings(BaseSettings):
     # Persistent flag-attempt log (sqlite). None disables.
     # The CLI's --attempt-log-path / --no-attempt-log flags overwrite this.
     # When a session is active (see backend.session), this is overridden to
-    # sessions/<NAME>/logs/attempts.db so each session has its own log.
-    attempt_log_path: str | None = "logs/attempts.db"
+    # sessions/<NAME>/logs/session.db (the unified schema-v2 file holding
+    # attempts + usage + challenge_solves + challenge_solve_models).
+    attempt_log_path: str | None = "logs/session.db"
 
     # Active session name. Resolved by SessionContext via --session flag,
     # CTF_SESSION env, or .ctf-session dotfile; falls back to "default".
@@ -50,8 +51,9 @@ class Settings(BaseSettings):
     session_name: str = "default"
 
     # Token / cost usage log (sqlite). Default lives in the session dir.
-    # Set to None to disable usage persistence.
-    usage_log_path: str | None = "logs/usage.db"
+    # Set to None to disable usage persistence. Schema v2 unifies this
+    # with the attempt log into one session.db.
+    usage_log_path: str | None = "logs/session.db"
 
     # Per-session quota cap (USD). When set, swarm spawns are blocked
     # once the session-cumulative cost (persisted + current process)

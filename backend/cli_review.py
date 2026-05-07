@@ -6,9 +6,13 @@ Standalone aiohttp app that walks `sessions/` and renders three views:
   /sessions/<name>               challenges in that session, with stats
   /sessions/<name>/c/<slug>      single challenge: writeup + per-model breakdown
 
-No coord required; reads usage.db (challenge_solves + challenge_solve_models)
-and writeups/*.md. Designed to run alongside or after the live coord —
-default port 13338 to not collide with the dashboard's 13337.
+No coord required; reads the session DB (`sessions/<name>/logs/session.db`,
+schema v2 — attempts + usage + challenge_solves + challenge_solve_models
+in one file) and writeups/*.md. Designed to run alongside or after the
+live coord — default port 13338 to not collide with the dashboard's 13337.
+
+For sessions that have not yet been migrated to v2 (still on the legacy
+attempts.db + usage.db split), run `ctf-migrate --apply` first.
 """
 
 from __future__ import annotations
@@ -42,6 +46,47 @@ def _slugify(name: str) -> str:
     """Match postmortem._slugify so writeup files line up with challenge names."""
     slug = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
     return slug or "challenge"
+
+
+def _resolve_session_db(session_dir: Path) -> Path | None:
+    """Locate the session DB. Falls back to legacy `usage.db` when
+    `session.db` is missing — keeps the review app working on
+    unmigrated sessions (with degraded data; user should run
+    `ctf-migrate --apply` for the full picture)."""
+    unified = session_dir / "logs" / "session.db"
+    if unified.exists():
+        return unified
+    legacy = session_dir / "logs" / "usage.db"
+    if legacy.exists():
+        return legacy
+    return None
+
+
+def _resolve_attempts_db(session_dir: Path) -> Path | None:
+    """Where to read `attempts` rows from. After v1→v2 migration both
+    live in `session.db`. Pre-migration the row data is in a separate
+    `attempts.db` file. Reviewer needs both so unmigrated sessions
+    surface their writeup history."""
+    unified = session_dir / "logs" / "session.db"
+    if unified.exists():
+        # Verify the table is actually there — sometimes session.db
+        # got created by a usage-only path before the v2 schema bump.
+        try:
+            with sqlite3.connect(str(unified)) as conn:
+                if _table_exists(conn, "attempts"):
+                    return unified
+        except sqlite3.Error:
+            pass
+    legacy = session_dir / "logs" / "attempts.db"
+    if legacy.exists():
+        return legacy
+    return None
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone() is not None
 
 
 @dataclass
@@ -85,64 +130,68 @@ def _summarize_session(session_dir: Path) -> SessionSummary:
     total_cost = 0.0
     last_activity = 0
     models: list[str] = []
-    db = session_dir / "logs" / "usage.db"
-    if db.exists():
-        try:
-            with sqlite3.connect(str(db)) as conn:
-                conn.row_factory = sqlite3.Row
-                row = conn.execute(
-                    "SELECT COUNT(*) AS n,"
-                    "       COALESCE(SUM(cost_usd), 0) AS cost,"
-                    "       COALESCE(MAX(finished_at), 0) AS last_ts"
-                    " FROM challenge_solves"
-                ).fetchone()
-                if row:
-                    attempts = int(row["n"] or 0)
-                    total_cost = float(row["cost"] or 0)
-                    last_activity = int(row["last_ts"] or 0)
-                rows = conn.execute(
-                    "SELECT DISTINCT model_spec FROM challenge_solve_models "
-                    "ORDER BY model_spec"
-                ).fetchall()
-                models = [r["model_spec"] for r in rows]
-        except Exception as e:
-            logger.warning("usage.db read failed for %s: %s", name, e)
 
-    # Solve count: prefer attempts.db (covers pre-persistence solves +
-    # the early submit_flag-classification bug 3b561ca where 'correct'
-    # rows landed with status='incorrect'). Falls back to
-    # challenge_solves.flag_found count if no attempts.db.
-    attempts_db = session_dir / "logs" / "attempts.db"
-    if attempts_db.exists():
+    # Stats that live in challenge_solves / challenge_solve_models /
+    # usage. Post-v2 these are in session.db; legacy sessions still
+    # have them in usage.db.
+    sess_db = _resolve_session_db(session_dir)
+    if sess_db is not None:
         try:
-            with sqlite3.connect(str(attempts_db)) as conn:
+            with sqlite3.connect(str(sess_db)) as conn:
                 conn.row_factory = sqlite3.Row
-                row = conn.execute(
-                    "SELECT COUNT(DISTINCT challenge_name) AS n,"
-                    "       COALESCE(MAX(ts), 0) AS last_ts FROM attempts"
-                    " WHERE status='correct' OR ("
-                    "       lower(message) LIKE '%correct%'"
-                    "   AND lower(message) NOT LIKE '%incorrect%')"
-                ).fetchone()
+                if _table_exists(conn, "challenge_solves"):
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS n,"
+                        "       COALESCE(SUM(cost_usd), 0) AS cost,"
+                        "       COALESCE(MAX(finished_at), 0) AS last_ts"
+                        " FROM challenge_solves"
+                    ).fetchone()
+                    if row:
+                        attempts = int(row["n"] or 0)
+                        total_cost = float(row["cost"] or 0)
+                        last_activity = int(row["last_ts"] or 0)
+                if _table_exists(conn, "challenge_solve_models"):
+                    rows = conn.execute(
+                        "SELECT DISTINCT model_spec FROM challenge_solve_models "
+                        "ORDER BY model_spec"
+                    ).fetchall()
+                    models = [r["model_spec"] for r in rows]
+        except Exception as e:
+            logger.warning("session DB read failed for %s: %s", name, e)
+
+    # Solve count comes from the `attempts` table — post-v2 in
+    # session.db, pre-migration in attempts.db. Same query works on
+    # both (the migration already normalised the v0→v1 row mistakes).
+    att_db = _resolve_attempts_db(session_dir)
+    if att_db is not None:
+        try:
+            with sqlite3.connect(str(att_db)) as conn:
+                conn.row_factory = sqlite3.Row
+                user_ver = int(conn.execute("PRAGMA user_version").fetchone()[0])
+                if user_ver >= 1:
+                    # Trust status — migration normalised legacy rows.
+                    sql = (
+                        "SELECT COUNT(DISTINCT challenge_name) AS n,"
+                        "       COALESCE(MAX(ts), 0) AS last_ts FROM attempts"
+                        " WHERE status IN ('correct', 'already_solved')"
+                    )
+                else:
+                    # Pre-v1 DB; fall back to message-content matching
+                    # so unmigrated sessions still render sensibly.
+                    sql = (
+                        "SELECT COUNT(DISTINCT challenge_name) AS n,"
+                        "       COALESCE(MAX(ts), 0) AS last_ts FROM attempts"
+                        " WHERE status IN ('correct', 'already_solved')"
+                        "    OR (lower(message) LIKE '%correct%'"
+                        "        AND lower(message) NOT LIKE '%incorrect%')"
+                    )
+                row = conn.execute(sql).fetchone()
                 if row:
                     solves = int(row["n"] or 0)
                     if not last_activity:
                         last_activity = int(row["last_ts"] or 0)
         except Exception as e:
-            logger.warning("attempts.db read failed for %s: %s", name, e)
-    else:
-        # No attempts.db — use challenge_solves directly.
-        if db.exists():
-            try:
-                with sqlite3.connect(str(db)) as conn:
-                    row = conn.execute(
-                        "SELECT COUNT(*) FROM challenge_solves"
-                        " WHERE status='flag_found'"
-                    ).fetchone()
-                    if row:
-                        solves = int(row[0] or 0)
-            except Exception:
-                pass
+            logger.warning("attempts read failed for %s: %s", name, e)
 
     writeups_dir = session_dir / "writeups"
     writeups_count = 0
@@ -180,22 +229,24 @@ class ChallengeRow:
 
 
 def _session_challenges(session_dir: Path) -> list[ChallengeRow]:
-    """Union challenge_solves rows + writeup files + attempts.db.
+    """Union challenge_solves rows + writeup files + attempts table.
 
-    Rationale: challenge_solves persistence landed mid-session — earlier
-    solved challenges have writeups but no challenge_solves row, so
-    relying on the table alone would hide most of an htb-ctf-mcp run's
-    history. We dedupe by slug and pull whatever metadata is available
-    from each source.
+    Rationale: challenge_solves persistence landed mid-session in some
+    runs — earlier solved challenges have writeups but no
+    challenge_solves row. We dedupe by slug and pull whatever metadata
+    is available from each source.
+
+    DB resolution: post-v2 both tables live in session.db; pre-v2 they
+    split into usage.db + attempts.db. _resolve_*_db handles both.
     """
     writeups_dir = session_dir / "writeups"
-    db = session_dir / "logs" / "usage.db"
-    attempts_db = session_dir / "logs" / "attempts.db"
+    db = _resolve_session_db(session_dir)
+    attempts_db = _resolve_attempts_db(session_dir)
 
     by_slug: dict[str, ChallengeRow] = {}
 
     # 1) challenge_solves rows (richest data)
-    if db.exists():
+    if db is not None and db.exists():
         try:
             with sqlite3.connect(str(db)) as conn:
                 conn.row_factory = sqlite3.Row
@@ -237,22 +288,34 @@ def _session_challenges(session_dir: Path) -> list[ChallengeRow]:
                         per_model=[dict(m) for m in per_model],
                     )
         except Exception as e:
-            logger.warning("usage.db read failed for %s: %s", session_dir.name, e)
+            logger.warning("session DB read failed for %s: %s", session_dir.name, e)
 
-    # 2) attempts.db — fills in `correct` flag for slugs without a solves row.
-    #    Detects the early-htb-ctf-mcp 'incorrect + Correct flag!' bug
-    #    classification too (matches commit 3b561ca).
-    if attempts_db.exists():
+    # 2) `attempts` table — fills in flag for slugs without a solves
+    #    row. Post-v1 we trust status; pre-v1 (unmigrated) we fall
+    #    back to message-content detection so legacy DBs still work.
+    if attempts_db is not None and attempts_db.exists():
         try:
             with sqlite3.connect(str(attempts_db)) as conn:
                 conn.row_factory = sqlite3.Row
-                rows = conn.execute(
-                    "SELECT challenge_name, flag, message, ts FROM attempts"
-                    " WHERE status='correct' OR ("
-                    "       lower(message) LIKE '%correct%'"
-                    "   AND lower(message) NOT LIKE '%incorrect%')"
-                    " ORDER BY ts ASC"
-                ).fetchall()
+                if not _table_exists(conn, "attempts"):
+                    rows = []
+                else:
+                    user_ver = int(conn.execute("PRAGMA user_version").fetchone()[0])
+                    if user_ver >= 1:
+                        sql = (
+                            "SELECT challenge_name, flag, message, ts FROM attempts"
+                            " WHERE status IN ('correct', 'already_solved')"
+                            " ORDER BY ts ASC"
+                        )
+                    else:
+                        sql = (
+                            "SELECT challenge_name, flag, message, ts FROM attempts"
+                            " WHERE status IN ('correct', 'already_solved')"
+                            "    OR (lower(message) LIKE '%correct%'"
+                            "        AND lower(message) NOT LIKE '%incorrect%')"
+                            " ORDER BY ts ASC"
+                        )
+                    rows = conn.execute(sql).fetchall()
                 for r in rows:
                     slug = _slugify(r["challenge_name"])
                     if slug in by_slug:
@@ -281,7 +344,7 @@ def _session_challenges(session_dir: Path) -> list[ChallengeRow]:
                         per_model=[],
                     )
         except Exception as e:
-            logger.warning("attempts.db read failed for %s: %s", session_dir.name, e)
+            logger.warning("attempts read failed for %s: %s", session_dir.name, e)
 
     # 3) writeup files — catch writeup-only entries (rebuilt with
     #    ctf-rebuild-writeups but no live solve row anywhere).

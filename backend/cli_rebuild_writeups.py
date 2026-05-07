@@ -99,7 +99,7 @@ def _classify_traces(traces_dir: Path) -> dict[str, list[dict[str, Any]]]:
 
 def _lookup_correct_attempt(sess: SessionContext, slug: str) -> dict[str, Any] | None:
     """Return the most-recent successful flag submission for `slug` from the
-    session's attempts.db, or None if no `correct` row exists.
+    session DB's `attempts` table, or None if no `correct` row exists.
 
     Why this matters: the swarm cancels every sibling solver the moment one
     finds the flag, and that cancellation can race the cancelled solver's
@@ -144,7 +144,7 @@ def _lookup_correct_attempt(sess: SessionContext, slug: str) -> dict[str, Any] |
                     "stored_status": row[3],  # for debugging logs
                 }
     except Exception as e:
-        logger.warning("attempts.db lookup failed for %s: %s", slug, e)
+        logger.warning("attempts lookup failed for %s: %s", slug, e)
     return None
 
 
@@ -268,7 +268,7 @@ async def _rebuild_one(
         flag = db_attempt["flag"]
         confirmed = True
         status = FLAG_FOUND
-        flag_source = "attempts.db"
+        flag_source = "attempts"
 
     meta = _challenge_meta_for(slug, sess)
     if meta.name == slug and meta.category == "unknown":
@@ -288,17 +288,19 @@ async def _rebuild_one(
 
     sibling_traces = [(s["model"], s["path"]) for s in siblings]
 
-    # When the flag came from attempts.db (not the trace), the available
-    # trace likely belongs to a sibling that was cancelled the moment the
-    # actual winner submitted — so it ends mid-investigation. Tell the
-    # writeup model up front, otherwise it concludes "abandoned solve" and
-    # produces a dispiriting "flag not captured" post-mortem.
+    # When the flag came from the attempts table (not the trace), the
+    # available trace likely belongs to a sibling that was cancelled
+    # the moment the actual winner submitted — so it ends
+    # mid-investigation. Tell the writeup model up front, otherwise it
+    # concludes "abandoned solve" and produces a dispiriting "flag not
+    # captured" post-mortem.
     caveat = None
-    if flag_source == "attempts.db":
+    if flag_source == "attempts":
         trace_finish_status = (winner.get("finish") or {}).get("status") or "unknown"
         caveat = (
             "The flag listed in `# Outcome` is sourced from the session's "
-            "AttemptLog (`attempts.db`), which is authoritative for outcome. "
+            "AttemptLog (the `attempts` table), which is authoritative for "
+            "outcome. "
             f"The trace below shows `status={trace_finish_status}` and lacks "
             "a `submit_flag` event because this trace belongs to a solver "
             "that was cancelled the instant a sibling solver in the same "

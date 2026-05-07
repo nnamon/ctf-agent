@@ -37,6 +37,22 @@ logger = logging.getLogger(__name__)
 
 
 _SCHEMA = """
+-- Schema v2: this file is the unified per-session DB. The `attempts`
+-- table below is also created by AttemptLogBackend's _init_db so the
+-- file can be opened from either entrypoint with full structure.
+CREATE TABLE IF NOT EXISTS attempts (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    backend_id      TEXT NOT NULL,
+    challenge_name  TEXT NOT NULL,
+    flag            TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    message         TEXT,
+    ts              INTEGER NOT NULL,
+    writeup_path    TEXT,
+    workspace_path  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_lookup ON attempts(backend_id, challenge_name);
+
 CREATE TABLE IF NOT EXISTS usage (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id          TEXT NOT NULL,
@@ -168,7 +184,7 @@ class ChallengeSolveRow:
     per_model: list[ChallengeSolveModelRow] = field(default_factory=list)
 
 
-USAGE_DB_SCHEMA_VERSION = 1
+USAGE_DB_SCHEMA_VERSION = 2
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -177,13 +193,16 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
-    # PRAGMA user_version: SQLite-native single-int slot for schema
-    # versioning. Stamp v1 on fresh DBs only; don't overwrite older
-    # values — `ctf-migrate` is responsible for advancing them after
-    # rewriting any stale rows. v1 means: challenge_solves.status
-    # accurately reflects whether the swarm solved the challenge
-    # (no `cancelled` rows where the solve actually landed via the
-    # coord-submit path — see commit d5e6272).
+    # PRAGMA user_version: SQLite-native schema-version slot.
+    #   v1: challenge_solves.status reflects swarm outcome accurately
+    #       (no `cancelled`-but-actually-solved rows from the
+    #        coord-submit path — see commit d5e6272).
+    #   v2: this DB file IS the session DB — it ALSO holds the
+    #       `attempts` table that used to live in a separate
+    #        attempts.db. The attempt_log module's _init_db ensures
+    #        that table exists. Stamp v2 on fresh DBs only;
+    #        `ctf-migrate` advances older DBs after merging the
+    #        sibling attempts.db file.
     cur_ver = conn.execute("PRAGMA user_version").fetchone()[0]
     if cur_ver == 0:
         conn.execute(f"PRAGMA user_version = {USAGE_DB_SCHEMA_VERSION}")

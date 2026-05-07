@@ -1,7 +1,8 @@
 """ctf-tokens CLI: report on persisted token / cost usage.
 
-Reads sessions/<NAME>/logs/usage.db (one row per agent per run, written
-at end-of-run by CostTracker.flush_to_log).
+Reads sessions/<NAME>/logs/session.db (the unified per-session DB,
+schema v2). The `usage` table holds one row per agent per run, written
+at end-of-run by CostTracker.flush_to_log.
 """
 
 from __future__ import annotations

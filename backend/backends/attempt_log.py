@@ -46,6 +46,9 @@ logger = logging.getLogger(__name__)
 
 
 _SCHEMA = """
+-- Schema v2: this file is the unified per-session DB. Sister tables
+-- (usage, challenge_solves, challenge_solve_models) are created by
+-- usage_log._connect on its first invocation against the same file.
 CREATE TABLE IF NOT EXISTS attempts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     backend_id      TEXT NOT NULL,
@@ -67,7 +70,7 @@ _MIGRATIONS = (
     "ALTER TABLE attempts ADD COLUMN workspace_path TEXT",
 )
 
-ATTEMPTS_DB_SCHEMA_VERSION = 1
+ATTEMPTS_DB_SCHEMA_VERSION = 2
 
 
 @dataclass
@@ -106,12 +109,16 @@ class AttemptLogBackend(Backend):
                     conn.execute(stmt)
                 except sqlite3.OperationalError:
                     pass
-            # PRAGMA user_version: schema-version slot. v1 means: every
-            # row's `status` accurately reflects backend acceptance —
-            # no rows where status='incorrect' but message='Correct
-            # flag!' (the early submit_flag classification bug fixed in
-            # 3b561ca / b297c90). Fresh DBs stamp v1 here; older DBs
-            # are advanced by `ctf-migrate` after rewriting stale rows.
+            # PRAGMA user_version: schema-version slot.
+            #   v1: every row's `status` reflects backend acceptance
+            #       (no `incorrect`-but-Correct-flag! mis-classifications
+            #        from 3b561ca / b297c90).
+            #   v2: this file IS the unified session DB — same physical
+            #       file holds challenge_solves + challenge_solve_models
+            #       + usage tables (managed by usage_log._connect's own
+            #       CREATE TABLE IF NOT EXISTS calls).
+            # Stamp the current target on fresh DBs only; older DBs are
+            # advanced by `ctf-migrate` after merging stale state.
             cur_ver = conn.execute("PRAGMA user_version").fetchone()[0]
             if cur_ver == 0:
                 conn.execute(f"PRAGMA user_version = {ATTEMPTS_DB_SCHEMA_VERSION}")
