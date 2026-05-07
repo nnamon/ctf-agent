@@ -426,7 +426,11 @@ class CodexSolver:
         self._proc.stdin.write((json.dumps(msg) + "\n").encode())
         await self._proc.stdin.drain()
         try:
-            return await asyncio.wait_for(future, timeout=300)
+            # 15 min timeout — codex's `thread/compact/start` has been
+            # observed taking 5+ min to reply on busy gpt-5.5 sessions,
+            # and the previous 300s ceiling caused us to bump the
+            # solver before the compaction had a chance to land.
+            return await asyncio.wait_for(future, timeout=900)
         finally:
             self._pending_responses.pop(msg_id, None)
 
@@ -676,7 +680,20 @@ class CodexSolver:
                             await self._rpc("thread/compact/start", {"threadId": self._thread_id})
                             self.tracer.event("compact_requested", tokens=total_tokens, window=context_window)
                         except Exception as e:
-                            logger.warning(f"[{self.agent_name}] Compaction request failed: {e}")
+                            # str(asyncio.TimeoutError()) is "" — log the type
+                            # too so the operator can tell silent timeouts
+                            # apart from real codex error responses.
+                            err_str = str(e) or type(e).__name__
+                            logger.warning(
+                                f"[{self.agent_name}] Compaction request failed: "
+                                f"{type(e).__name__}: {err_str}"
+                            )
+                            self.tracer.event(
+                                "compact_failed",
+                                error=err_str,
+                                error_type=type(e).__name__,
+                                tokens=total_tokens,
+                            )
 
                 self.cost_tracker.record_tokens(
                     self.agent_name, self.model_id,
