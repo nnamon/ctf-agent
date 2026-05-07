@@ -489,26 +489,54 @@ def _persist_challenge_solve(
     """
     try:
         from backend.sandbox import RUN_ID
-        from backend.usage_log import ChallengeSolveRow, insert_solve
+        from backend.usage_log import (
+            ChallengeSolveModelRow,
+            ChallengeSolveRow,
+            insert_solve,
+        )
 
         usage_db = getattr(deps.settings, "usage_log_path", None)
         if not usage_db:
             return  # operator disabled usage logging
 
         challenge_name = swarm.meta.name
+        session_name = getattr(deps.settings, "session_name", "default") or "default"
         # Sum tokens + cost across every solver in this swarm. Agents are
         # named "<challenge>/<spec>" so prefix-matching catches user/root
         # halves on htb-machines and any future per-attempt naming.
+        # Also build per-model rows for the breakdown table.
         prefix = f"{challenge_name}/"
         in_t = out_t = cache_t = 0
         cost = 0.0
+        per_model_rows: list[ChallengeSolveModelRow] = []
+        winner_spec_raw = swarm.winner_spec or ""
         for agent_name, usage in swarm.cost_tracker.by_agent.items():
             if not agent_name.startswith(prefix):
                 continue
-            in_t += int(usage.usage.input_tokens or 0)
-            out_t += int(usage.usage.output_tokens or 0)
-            cache_t += int(usage.usage.cache_read_tokens or 0)
-            cost += float(usage.cost_usd or 0.0)
+            spec = agent_name[len(prefix):]
+            agent_in = int(usage.usage.input_tokens or 0)
+            agent_out = int(usage.usage.output_tokens or 0)
+            agent_cache = int(usage.usage.cache_read_tokens or 0)
+            agent_cost = float(usage.cost_usd or 0.0)
+            in_t += agent_in
+            out_t += agent_out
+            cache_t += agent_cache
+            cost += agent_cost
+            # Pull per-solver step count off the live solver if available.
+            solver = swarm.solvers.get(spec) if hasattr(swarm, "solvers") else None
+            steps = int(getattr(solver, "_step_count", 0) or 0) if solver else 0
+            per_model_rows.append(ChallengeSolveModelRow(
+                run_id=RUN_ID,
+                session_name=session_name,
+                challenge_name=challenge_name,
+                model_spec=spec,
+                steps=steps,
+                cost_usd=agent_cost,
+                input_tokens=agent_in,
+                output_tokens=agent_out,
+                cache_read_tokens=agent_cache,
+                won=(spec == winner_spec_raw),
+            ))
 
         # Status normalisation. swarm.cancel_event is set on kill_swarm;
         # we record those as "cancelled" so they don't pollute the
@@ -530,7 +558,7 @@ def _persist_challenge_solve(
         meta = swarm.meta
         row = ChallengeSolveRow(
             run_id=RUN_ID,
-            session_name=getattr(deps.settings, "session_name", "default") or "default",
+            session_name=session_name,
             challenge_name=challenge_name,
             category=getattr(meta, "category", "") or None,
             points=int(getattr(meta, "value", 0) or 0) or None,
@@ -546,6 +574,7 @@ def _persist_challenge_solve(
             input_tokens=in_t,
             output_tokens=out_t,
             cache_read_tokens=cache_t,
+            per_model=per_model_rows,
         )
         from pathlib import Path as _P
         insert_solve(_P(usage_db), row)

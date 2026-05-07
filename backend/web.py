@@ -452,6 +452,58 @@ pre.log {
   color: var(--md-sys-color-on-surface-variant); font-style: italic;
 }
 
+/* Solve-history block under the solvers table — one row per
+   challenge_solves entry, with an embedded per-model breakdown.
+   Surfaces total cost / duration / token spend that wasn't visible
+   anywhere on the dashboard before, and lets the operator compare
+   model performance per-challenge. */
+.solves {
+  margin: 12px 0;
+  padding: 14px 16px;
+  background: var(--md-sys-color-surface-container-lowest);
+  border-radius: var(--md-shape-sm);
+  border: 1px solid var(--md-sys-color-outline-variant);
+}
+.solves h3 {
+  font-size: 13px; font-weight: 600;
+  color: var(--md-sys-color-on-surface-variant);
+  text-transform: uppercase; letter-spacing: 0.04em;
+  margin: 0 0 12px;
+}
+.solve-run { margin-bottom: 14px; }
+.solve-run:last-child { margin-bottom: 0; }
+.solve-summary {
+  display: flex; align-items: center; gap: 10px;
+  flex-wrap: wrap; font-size: 13px; margin-bottom: 8px;
+}
+.solve-summary .spacer { flex: 1; }
+.solve-summary .winner-spec {
+  color: var(--md-sys-color-primary); font-weight: 500;
+}
+.solve-summary .muted {
+  color: var(--md-sys-color-on-surface-variant); font-size: 12px;
+}
+table.model-breakdown {
+  width: 100%; border-collapse: collapse; font-size: 12.5px;
+}
+table.model-breakdown th {
+  text-align: left; font-weight: 500;
+  color: var(--md-sys-color-on-surface-variant);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+table.model-breakdown th.right { text-align: right; }
+table.model-breakdown td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+table.model-breakdown td.right { text-align: right; }
+table.model-breakdown tr:last-child td { border-bottom: none; }
+table.model-breakdown tr.winner-row td {
+  color: var(--md-sys-color-primary);
+  background: color-mix(in srgb, var(--md-sys-color-primary) 6%, transparent);
+}
+
 /* Markdown-rendered writeup */
 .writeup {
   padding: 20px 24px;
@@ -1427,6 +1479,13 @@ function renderDetail(challenges) {
     }
   }
 
+  // Solve-summary region — rendered once per detail open from
+  // /api/solves/<chal>. Empty for unsolved/never-spawned challenges
+  // (the API returns runs:[]); populated for any with persisted
+  // challenge_solves rows. Lazy-loads to avoid blocking the initial
+  // detail render on a SQLite hit.
+  html += `<div class="solves-region" id="solves-${cNameEnc}"></div>`;
+
   // Writeup region (filled lazily by toggleWriteup)
   html += `<div class="writeup-region" id="writeup-${cNameEnc}" style="display:none"></div>`;
 
@@ -1459,6 +1518,10 @@ function renderDetail(challenges) {
   });
 
   for (const k of expandedLogs) fetchLogInto(k);
+  // Solve history loads lazily so the SQLite hit doesn't block the
+  // initial detail render. Empty for never-spawned challenges; keeps
+  // populated for done / killed / partial-fail runs.
+  fetchSolves(cNameEnc);
 }
 
 function selectChallenge(nameEnc) {
@@ -1484,6 +1547,68 @@ async function spawnNamed(nameEnc) {
   await fetch('/api/spawn', {method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({challenge_name: decodeURIComponent(nameEnc)})});
+}
+
+async function fetchSolves(nameEnc) {
+  // Pulls challenge_solves + per-model breakdown from /api/solves/<chal>
+  // and renders them into the solves-region placeholder. Called once
+  // when renderDetail opens a panel; silent no-op on empty results.
+  const el = document.getElementById('solves-' + nameEnc);
+  if (!el) return;
+  try {
+    const r = await fetch('/api/solves/' + nameEnc);
+    const d = await r.json();
+    const runs = d.runs || [];
+    if (!runs.length) { el.innerHTML = ''; return; }
+    let html = '<div class="solves"><h3>Solve history</h3>';
+    for (const run of runs) {
+      const wallStart = new Date(run.started_at * 1000).toLocaleString();
+      const dur = fmtDuration(run.duration_seconds);
+      const cost = fmtUsd(run.cost_usd);
+      const inT = (run.input_tokens || 0).toLocaleString();
+      const outT = (run.output_tokens || 0).toLocaleString();
+      const cacheT = (run.cache_read_tokens || 0).toLocaleString();
+      const winnerCell = run.winner_spec
+        ? `<span class="winner-spec">${escapeHTML(run.winner_spec)}</span>`
+        : '<span class="muted">none</span>';
+      // status pill — re-use existing chip styles
+      const statusPill = chip(run.status === 'flag_found' ? 'done' : run.status === 'cancelled' ? 'killed' : 'broken');
+      html += `<div class="solve-run">
+        <div class="solve-summary">
+          <span class="muted">${wallStart}</span>
+          ${statusPill}
+          <span>winner: ${winnerCell}</span>
+          <span class="spacer"></span>
+          <span class="mono">${dur}</span>
+          <span class="mono">${cost}</span>
+          <span class="muted mono" title="input/output/cache tokens">${inT} / ${outT} / ${cacheT}</span>
+        </div>`;
+      if (run.models && run.models.length) {
+        html += `<table class="model-breakdown"><thead><tr>
+          <th>Model</th><th class="right">Steps</th>
+          <th class="right">Cost</th><th class="right">In tok</th>
+          <th class="right">Out tok</th><th class="right">Cache</th>
+        </tr></thead><tbody>`;
+        for (const m of run.models) {
+          const cls = m.won ? 'winner-row' : '';
+          html += `<tr class="${cls}"><td>${escapeHTML(m.model_spec)}${m.won ? ' ★' : ''}</td>
+            <td class="right mono">${m.steps}</td>
+            <td class="right mono">${fmtUsd(m.cost_usd)}</td>
+            <td class="right mono">${(m.input_tokens||0).toLocaleString()}</td>
+            <td class="right mono">${(m.output_tokens||0).toLocaleString()}</td>
+            <td class="right mono">${(m.cache_read_tokens||0).toLocaleString()}</td>
+          </tr>`;
+        }
+        html += '</tbody></table>';
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+    el.innerHTML = html;
+  } catch (e) {
+    // Silent — solve-history is supplementary; no need to clutter UI on failure.
+    el.innerHTML = '';
+  }
 }
 
 async function toggleWriteup(nameEnc) {
@@ -2605,6 +2730,60 @@ async def _writeup(request: web.Request) -> web.Response:
     return web.json_response({"text": text, "path": str(path)})
 
 
+async def _solves(request: web.Request) -> web.Response:
+    """Return persisted swarm-completion summaries for a challenge.
+
+    Reads challenge_solves + challenge_solve_models from the session's
+    usage.db. Returns a list of swarm-runs (most recent first), each
+    with its per-model breakdown. Used by the dashboard's expanded-
+    view to show stats for solved/killed challenges that no longer
+    have a live in-memory swarm.
+    """
+    chal = request.match_info["chal"]
+    deps = request.app["deps"]
+    db_path = getattr(deps.settings, "usage_log_path", None)
+    if not db_path:
+        return web.json_response({"runs": []})
+    import sqlite3
+    p = Path(db_path)
+    if not p.exists():
+        return web.json_response({"runs": []})
+    session_name = getattr(deps.settings, "session_name", "default") or "default"
+    try:
+        conn = sqlite3.connect(str(p), isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        try:
+            parents = conn.execute(
+                "SELECT id, run_id, status, flag, confirmed, winner_spec, "
+                "       winner_steps, duration_seconds, cost_usd, "
+                "       input_tokens, output_tokens, cache_read_tokens, "
+                "       started_at, finished_at "
+                "  FROM challenge_solves "
+                " WHERE session_name = ? AND challenge_name = ? "
+                " ORDER BY finished_at DESC",
+                (session_name, chal),
+            ).fetchall()
+            runs = []
+            for parent in parents:
+                models = conn.execute(
+                    "SELECT model_spec, steps, cost_usd, input_tokens, "
+                    "       output_tokens, cache_read_tokens, won "
+                    "  FROM challenge_solve_models "
+                    " WHERE challenge_solve_id = ? "
+                    " ORDER BY won DESC, cost_usd DESC",
+                    (parent["id"],),
+                ).fetchall()
+                runs.append({
+                    **dict(parent),
+                    "models": [dict(m) for m in models],
+                })
+        finally:
+            conn.close()
+    except Exception as e:
+        return web.json_response({"runs": [], "error": str(e)})
+    return web.json_response({"runs": runs})
+
+
 async def _logs(request: web.Request) -> web.Response:
     """Tail the JSONL tracer file for one solver."""
     chal = request.match_info["chal"]
@@ -2711,6 +2890,7 @@ def build_app(deps: Any, run_id: str) -> web.Application:
     app.router.add_get("/api/events", _events)
     app.router.add_get("/api/logs/{chal}/{model}", _logs)
     app.router.add_get("/api/writeup/{chal}", _writeup)
+    app.router.add_get("/api/solves/{chal}", _solves)
     app.router.add_get("/api/writeups", _writeups_list)
     app.router.add_post("/api/msg", _msg)
     app.router.add_post("/api/swarms/{chal}/kill", _kill_swarm)

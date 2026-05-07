@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -85,6 +85,29 @@ CREATE TABLE IF NOT EXISTS challenge_solves (
 CREATE INDEX IF NOT EXISTS idx_solves_run     ON challenge_solves(run_id);
 CREATE INDEX IF NOT EXISTS idx_solves_session ON challenge_solves(session_name, finished_at);
 CREATE INDEX IF NOT EXISTS idx_solves_chall   ON challenge_solves(challenge_name, finished_at);
+
+-- One row per (swarm completion, solver model). Normalised so it's
+-- easy to slice cost / time-to-solve by model in SQL without parsing
+-- JSON. The parent challenge_solves row keeps the swarm-level totals;
+-- this child table breaks them down per-spec for "did mini outperform
+-- 5.5 on Crypto?"-style questions.
+CREATE TABLE IF NOT EXISTS challenge_solve_models (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    challenge_solve_id INTEGER NOT NULL,
+    run_id            TEXT NOT NULL,
+    session_name      TEXT NOT NULL,
+    challenge_name    TEXT NOT NULL,
+    model_spec        TEXT NOT NULL,
+    steps             INTEGER NOT NULL DEFAULT 0,
+    cost_usd          REAL    NOT NULL DEFAULT 0,
+    input_tokens      INTEGER NOT NULL DEFAULT 0,
+    output_tokens     INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    won               INTEGER NOT NULL DEFAULT 0,  -- 0/1: did this model find the flag?
+    UNIQUE(challenge_solve_id, model_spec)
+);
+CREATE INDEX IF NOT EXISTS idx_solve_models_chall ON challenge_solve_models(challenge_name, model_spec);
+CREATE INDEX IF NOT EXISTS idx_solve_models_run   ON challenge_solve_models(run_id);
 """
 
 
@@ -102,6 +125,22 @@ class UsageRow:
     ts: int = 0
     challenge_name: str | None = None
     provider_spec: str | None = None
+
+
+@dataclass
+class ChallengeSolveModelRow:
+    """Per-(swarm, solver-model) row. challenge_solve_id is filled in by
+    insert_solve after the parent row is inserted."""
+    run_id: str
+    session_name: str
+    challenge_name: str
+    model_spec: str
+    steps: int = 0
+    cost_usd: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    won: bool = False
 
 
 @dataclass
@@ -123,6 +162,10 @@ class ChallengeSolveRow:
     winner_steps: int | None = None
     category: str | None = None
     points: int | None = None
+    # Per-solver breakdown. Inserted into challenge_solve_models after
+    # the parent row is committed. Empty list = no per-model data
+    # available (e.g. swarm aborted before any solver started).
+    per_model: list[ChallengeSolveModelRow] = field(default_factory=list)
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -165,12 +208,13 @@ def insert_row(db_path: Path, row: UsageRow) -> None:
 
 
 def insert_solve(db_path: Path, row: ChallengeSolveRow) -> None:
-    """Insert one swarm-completion summary into challenge_solves.
-    Failures are swallowed + logged — accounting must not break a
-    successful solve."""
+    """Insert one swarm-completion summary into challenge_solves, plus
+    a per-(model_spec) row into challenge_solve_models for each entry
+    in row.per_model. Failures are swallowed + logged — accounting
+    must not break a successful solve."""
     try:
         with _connect(db_path) as conn:
-            conn.execute(
+            cursor = conn.execute(
                 "INSERT INTO challenge_solves("
                 " run_id, session_name, challenge_name, category, points, "
                 " status, flag, confirmed, winner_spec, winner_steps, "
@@ -198,6 +242,34 @@ def insert_solve(db_path: Path, row: ChallengeSolveRow) -> None:
                     int(row.finished_at),
                 ),
             )
+            solve_id = cursor.lastrowid
+            for m in row.per_model:
+                try:
+                    conn.execute(
+                        "INSERT INTO challenge_solve_models("
+                        " challenge_solve_id, run_id, session_name, "
+                        " challenge_name, model_spec, steps, cost_usd, "
+                        " input_tokens, output_tokens, cache_read_tokens, won) "
+                        "VALUES (?, ?, ?,  ?, ?,  ?, ?,  ?, ?, ?,  ?)",
+                        (
+                            solve_id,
+                            m.run_id,
+                            m.session_name,
+                            m.challenge_name,
+                            m.model_spec,
+                            int(m.steps),
+                            float(m.cost_usd),
+                            int(m.input_tokens),
+                            int(m.output_tokens),
+                            int(m.cache_read_tokens),
+                            1 if m.won else 0,
+                        ),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "challenge_solve_models insert (model=%s) failed: %s",
+                        m.model_spec, e,
+                    )
     except Exception as e:
         logger.warning("challenge_solves insert failed: %s", e)
 
