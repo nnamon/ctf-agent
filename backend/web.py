@@ -1017,6 +1017,8 @@ button.quota-edit:hover { color: var(--md-sys-color-primary); }
     <span class="v" id="hdr-session">—</span></div>
   <div class="kv"><span class="k">run</span>
     <span class="v mono" id="hdr-run">—</span></div>
+  <div class="kv"><span class="k">solved</span>
+    <span class="v mono" id="hdr-solved" title="Solved / total challenges (per the session's known catalog)">0 / 0</span></div>
   <div class="kv"><span class="k">spent</span>
     <span class="v mono" id="hdr-cost">$0.00</span></div>
   <div class="kv" id="hdr-quota-wrap" style="display:none">
@@ -1127,6 +1129,13 @@ function renderHeader(s) {
   document.getElementById('hdr-cost').textContent = fmtUsd(s.cost.total_usd);
   document.getElementById('hdr-time').textContent =
     new Date(s.ts * 1000).toLocaleTimeString();
+
+  // Solved-count: count distinct challenges the poller has marked
+  // ctfd_solved in the live status payload. Same source as the green
+  // checkmarks on the tile board, just aggregated for the header.
+  const total = (s.challenges || []).length;
+  const solved = (s.challenges || []).filter(c => c.ctfd_solved).length;
+  document.getElementById('hdr-solved').textContent = `${solved} / ${total}`;
 
   const quotaWrap = document.getElementById('hdr-quota-wrap');
   const appBar = document.querySelector('.app-bar');
