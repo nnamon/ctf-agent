@@ -270,7 +270,13 @@ class HtbCtfCredsBackend(Backend):
                 "already_solved", msg,
                 f'ALREADY SOLVED — flag previously accepted ({msg})',
             )
-        if success:
+        # The HTB CTF creds API has shipped 200-OK bodies that say
+        # "Correct flag!" without setting `success=true` (observed live
+        # 2026-05-07 on event 1434). Treat any message containing
+        # "correct" but not "incorrect" as a win — same fix pattern as
+        # 3b561ca on htb-ctf-mcp.
+        message_says_correct = "correct" in msg_lower and "incorrect" not in msg_lower
+        if success or message_says_correct:
             stub["_htb_ctf"]["solved"] = True
             return SubmitResult(
                 "correct", msg or "accepted",
