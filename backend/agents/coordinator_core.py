@@ -555,7 +555,12 @@ def _persist_challenge_solve(
         in_t = out_t = cache_t = 0
         cost = 0.0
         per_model_rows: list[ChallengeSolveModelRow] = []
+        # winner_spec carries the full provider/model string the operator
+        # passed (e.g. "codex/gpt-5.4-mini") while CostTracker.by_agent's
+        # keys use the bare model_id ("Toy XOR-B64/gpt-5.4-mini"). Compare
+        # against both forms so the per-model `won` flag isn't always 0.
         winner_spec_raw = swarm.winner_spec or ""
+        winner_id = winner_spec_raw.rsplit("/", 1)[-1] if "/" in winner_spec_raw else winner_spec_raw
         for agent_name, usage in swarm.cost_tracker.by_agent.items():
             if not agent_name.startswith(prefix):
                 continue
@@ -581,7 +586,7 @@ def _persist_challenge_solve(
                 input_tokens=agent_in,
                 output_tokens=agent_out,
                 cache_read_tokens=agent_cache,
-                won=(spec == winner_spec_raw),
+                won=(spec == winner_spec_raw or spec == winner_id),
             ))
 
         # Status normalisation. swarm.cancel_event is set on kill_swarm;
