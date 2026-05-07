@@ -483,8 +483,16 @@ pre.log {
 .solve-summary .muted {
   color: var(--md-sys-color-on-surface-variant); font-size: 12px;
 }
+.model-breakdown-scroll {
+  /* 6-column table overflows narrow mobile widths; let the user pan it
+     horizontally without dragging the whole solve panel. */
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0 -4px;  /* pull edges to wrapper bounds so scroll feels native */
+}
 table.model-breakdown {
   width: 100%; border-collapse: collapse; font-size: 12.5px;
+  min-width: 480px;  /* keeps columns from collapsing into unreadable smush */
 }
 table.model-breakdown th {
   text-align: left; font-weight: 500;
@@ -1602,7 +1610,10 @@ async function fetchSolves(nameEnc) {
           <span class="muted mono" title="input/output/cache tokens">${inT} / ${outT} / ${cacheT}</span>
         </div>`;
       if (run.models && run.models.length) {
-        html += `<table class="model-breakdown"><thead><tr>
+        // Wrapper makes the 6-column table horizontally scrollable on
+        // mobile; without it the rightmost columns clip past the .solves
+        // container's padding.
+        html += `<div class="model-breakdown-scroll"><table class="model-breakdown"><thead><tr>
           <th>Model</th><th class="right">Steps</th>
           <th class="right">Cost</th><th class="right">In tok</th>
           <th class="right">Out tok</th><th class="right">Cache</th>
@@ -1617,7 +1628,7 @@ async function fetchSolves(nameEnc) {
             <td class="right mono">${(m.cache_read_tokens||0).toLocaleString()}</td>
           </tr>`;
         }
-        html += '</tbody></table>';
+        html += '</tbody></table></div>';
       }
       html += '</div>';
     }
