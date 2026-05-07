@@ -27,6 +27,7 @@ ctf-tokens = "backend.cli_tokens:tokens_main"
 ctf-pull = "backend.cli_pull:pull"
 ctf-rebuild-writeups = "backend.cli_rebuild_writeups:main"
 ctf-review = "backend.cli_review:review_main"
+ctf-migrate = "backend.cli_migrate:migrate_main"
 
 [build-system]
 requires = ["hatchling"]

@@ -168,12 +168,25 @@ class ChallengeSolveRow:
     per_model: list[ChallengeSolveModelRow] = field(default_factory=list)
 
 
+USAGE_DB_SCHEMA_VERSION = 1
+
+
 def _connect(db_path: Path) -> sqlite3.Connection:
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    # PRAGMA user_version: SQLite-native single-int slot for schema
+    # versioning. Stamp v1 on fresh DBs only; don't overwrite older
+    # values — `ctf-migrate` is responsible for advancing them after
+    # rewriting any stale rows. v1 means: challenge_solves.status
+    # accurately reflects whether the swarm solved the challenge
+    # (no `cancelled` rows where the solve actually landed via the
+    # coord-submit path — see commit d5e6272).
+    cur_ver = conn.execute("PRAGMA user_version").fetchone()[0]
+    if cur_ver == 0:
+        conn.execute(f"PRAGMA user_version = {USAGE_DB_SCHEMA_VERSION}")
     return conn
 
 

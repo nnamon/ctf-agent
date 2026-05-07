@@ -67,6 +67,8 @@ _MIGRATIONS = (
     "ALTER TABLE attempts ADD COLUMN workspace_path TEXT",
 )
 
+ATTEMPTS_DB_SCHEMA_VERSION = 1
+
 
 @dataclass
 class AttemptLogBackend(Backend):
@@ -104,6 +106,15 @@ class AttemptLogBackend(Backend):
                     conn.execute(stmt)
                 except sqlite3.OperationalError:
                     pass
+            # PRAGMA user_version: schema-version slot. v1 means: every
+            # row's `status` accurately reflects backend acceptance —
+            # no rows where status='incorrect' but message='Correct
+            # flag!' (the early submit_flag classification bug fixed in
+            # 3b561ca / b297c90). Fresh DBs stamp v1 here; older DBs
+            # are advanced by `ctf-migrate` after rewriting stale rows.
+            cur_ver = conn.execute("PRAGMA user_version").fetchone()[0]
+            if cur_ver == 0:
+                conn.execute(f"PRAGMA user_version = {ATTEMPTS_DB_SCHEMA_VERSION}")
 
     def _log(self, name: str, flag: str, result: SubmitResult) -> None:
         with self._connect() as conn:
