@@ -662,8 +662,13 @@ class CodexSolver:
                 # Proactive compaction. Codex's own pre-sampling compact runs
                 # too late — once the visible-bytes total approaches the
                 # window, the compaction request itself overflows and fails
-                # with context_length_exceeded, wedging the thread. Triggering
-                # at 70% gives the compact request enough headroom.
+                # with context_length_exceeded, wedging the thread. The 80%
+                # threshold (raised from 70%) trades a smaller compaction
+                # headroom for fewer total compaction attempts, which
+                # matters because codex's `thread/compact/start` RPC has
+                # been observed silently timing out at ~96% across recent
+                # sessions — every avoided compaction is a saved 5–15min
+                # bump-recovery cycle.
                 #
                 # Hysteresis: clear the latch once usage drops back under 50%
                 # so we'll re-request if the next round of tool output blows
@@ -673,7 +678,7 @@ class CodexSolver:
                 if context_window:
                     if total_tokens < context_window * 0.5:
                         self._compact_requested = False
-                    if total_tokens > context_window * 0.7 and not self._compact_requested:
+                    if total_tokens > context_window * 0.8 and not self._compact_requested:
                         self._compact_requested = True
                         logger.info(f"[{self.agent_name}] Requesting compaction ({total_tokens}/{context_window} tokens)")
                         try:
