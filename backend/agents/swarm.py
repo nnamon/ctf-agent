@@ -233,6 +233,7 @@ class ChallengeSwarm:
                 return None
             solver = self._create_solver(model_spec)
             self.solvers[model_spec] = solver
+            stopped_in_branch = False
             try:
                 result, final_solver = await self._run_solver_loop(solver, model_spec)
                 solver = final_solver
@@ -245,6 +246,7 @@ class ChallengeSwarm:
                 )
                 with contextlib.suppress(Exception):
                     await solver.stop()
+                stopped_in_branch = True
                 if attempt < 2:
                     # Codex app-server outages observed today have run
                     # 3-5 minutes per window. Old 5s/10s backoff was
@@ -258,13 +260,18 @@ class ChallengeSwarm:
                 logger.error(f"[{self.meta.name}/{model_spec}] Fatal: {e}", exc_info=True)
                 with contextlib.suppress(Exception):
                     await solver.stop()
+                stopped_in_branch = True
                 return None
             finally:
-                # `solver.stop()` for the success path. The retry-loop
-                # branches above stop manually before continuing so that
-                # we don't double-stop on retry. Catch the case where
-                # the loop returned without going through except/retry.
-                pass
+                # Stop on the success/normal-return path. The retry
+                # branches above already stopped + set stopped_in_branch
+                # so we don't double-stop. Without this, every solved
+                # swarm leaked its sandbox container — observed live as
+                # 16 stale ctf-sandbox containers after ~10 solves on
+                # 2026-05-07's htb-ctf-creds run.
+                if not stopped_in_branch and solver is not None:
+                    with contextlib.suppress(Exception):
+                        await solver.stop()
         logger.error(
             "[%s/%s] codex transport gave up after 3 attempts: %s",
             self.meta.name, model_spec, last_err,
