@@ -288,10 +288,14 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
                             model=swarm.winner_spec or "?",
                             text=f"{challenge_name}: {flag_short}",
                         )
-                    if not deps.no_writeup:
-                        await _generate_writeup_for_swarm(swarm, result, deps, duration_s)
 
-                # Persist a per-challenge summary row for post-run review.
+                # Persist the per-challenge summary BEFORE the writeup. The
+                # writeup can take 30s–15min (claude refusal → codex fallback,
+                # rate-limit retries, etc.) and has previously hung the whole
+                # swarm task. Writing the solve row first means the
+                # challenge_solves table has the row even if writeup fails or
+                # the coord crashes mid-postmortem; writeup_path is patched
+                # onto the AttemptLog row separately on writeup success.
                 # Logged for ALL outcomes (solved, gave_up, error, cancelled)
                 # so we can compute solve-rate / time-to-solve / cost-per-
                 # category aggregations after the competition.
@@ -299,6 +303,9 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
                     deps=deps, swarm=swarm, result=result, duration_s=duration_s,
                     started_at=started_at_wall, finished_at=finished_at_wall,
                 )
+
+                if result and result.status == FLAG_FOUND and not deps.no_writeup:
+                    await _generate_writeup_for_swarm(swarm, result, deps, duration_s)
 
             task = asyncio.create_task(_run_and_cleanup(), name=f"swarm-{challenge_name}")
             deps.swarm_tasks[challenge_name] = task
