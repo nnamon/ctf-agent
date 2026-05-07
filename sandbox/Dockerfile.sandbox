@@ -1001,6 +1001,47 @@ RUN dpkg --add-architecture amd64 \
     && mkdir -p /lib64 \
     && ln -sf /opt/x86_64-sysroot/lib64/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2
 
+# ── Callback / tunnel toolkit ───────────────────────────────────────────────
+# webhook.site is fine for one-shot capture but cannot respond, which limits
+# SSRF→RCE chains, OAuth callbacks, blind XSS payload delivery, etc. These
+# three binaries cover the missing modes:
+#
+#   cloudflared       HTTP(S) tunnel    -> *.trycloudflare.com   (no auth)
+#   bore              raw TCP tunnel    -> bore.pub:RANDOM_PORT  (no auth)
+#   interactsh-client OOB DNS/HTTP/SMTP -> *.oast.* domain       (no auth, capture-only)
+#
+# An `expose-port <port>` helper prints reachable VPN/docker addresses plus
+# copy-paste tunnel commands for the given local port — see /usr/local/bin/expose-port.
+RUN set -eux \
+    && ARCH=$(dpkg --print-architecture) \
+    && case "$ARCH" in \
+         arm64) CF_ARCH=arm64 ; BORE_ARCH=aarch64 ; ISH_ARCH=arm64 ;; \
+         amd64) CF_ARCH=amd64 ; BORE_ARCH=x86_64  ; ISH_ARCH=amd64 ;; \
+         *) echo "unsupported arch: $ARCH" ; exit 1 ;; \
+       esac \
+    && curl -fsSL -o /tmp/cloudflared.deb \
+        "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}.deb" \
+    && dpkg -i /tmp/cloudflared.deb \
+    && rm /tmp/cloudflared.deb \
+    && BORE_VER=v0.6.0 \
+    && curl -fsSL -o /tmp/bore.tgz \
+        "https://github.com/ekzhang/bore/releases/download/${BORE_VER}/bore-${BORE_VER}-${BORE_ARCH}-unknown-linux-musl.tar.gz" \
+    && tar -xzf /tmp/bore.tgz -C /usr/local/bin bore \
+    && chmod +x /usr/local/bin/bore \
+    && rm /tmp/bore.tgz \
+    && ISH_VER=$(curl -fsSL https://api.github.com/repos/projectdiscovery/interactsh/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | sed 's/^v//') \
+    && curl -fsSL -o /tmp/ish.zip \
+        "https://github.com/projectdiscovery/interactsh/releases/download/v${ISH_VER}/interactsh-client_${ISH_VER}_linux_${ISH_ARCH}.zip" \
+    && unzip -j /tmp/ish.zip interactsh-client -d /usr/local/bin/ \
+    && chmod +x /usr/local/bin/interactsh-client \
+    && rm /tmp/ish.zip \
+    && cloudflared --version \
+    && bore --version \
+    && interactsh-client -version 2>&1 | grep -q 'Current Version'
+
+COPY sandbox/expose-port /usr/local/bin/expose-port
+RUN chmod +x /usr/local/bin/expose-port
+
 # ── Tools reference ──────────────────────────────────────────────────────────
 COPY sandbox/sandbox-tools.txt /tools.txt
 

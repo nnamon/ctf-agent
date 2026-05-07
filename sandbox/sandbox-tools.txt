@@ -561,6 +561,34 @@ wine / wine64      Run Windows PE binaries. wine64 file.exe (x86_64 PE),
                    capa, floss) or rebuild the sandbox with --platform
                    linux/amd64.
 
+== CALLBACK / TUNNELS ==
+For SSRF, blind XSS, OAuth callbacks, reverse shells, OOB exfil, etc.
+Two scenarios:
+
+  1. Target is on our VPN or shares a docker network -> bind a listener
+     on tun0/eth0 directly; use the interface IP as the callback URL.
+     `expose-port <port>` prints the right address.
+
+  2. Target is on the public internet -> tunnel the local listener out.
+     None of these need an account or API key.
+
+expose-port        Helper. `expose-port <port>` prints reachable VPN/docker
+                   addresses for <port> plus copy-paste tunnel commands.
+                   Does not spawn anything itself.
+cloudflared        HTTP(S) tunnel to *.trycloudflare.com, no auth.
+                   `cloudflared tunnel --url http://localhost:8080 --no-autoupdate`
+                   public URL appears on stderr. Ephemeral; dies with process.
+                   Full request/response — serve any payload from the local server.
+bore               Raw TCP forward to bore.pub:RANDOM, no auth.
+                   `bore local 4444 --to bore.pub`
+                   Use for reverse shells, custom protocol servers, anything TCP.
+                   remote_port is logged on stderr.
+interactsh-client  Out-of-band capture for DNS / HTTP / SMTP / LDAP, no auth.
+                   `interactsh-client -v` prints a *.oast.* hostname; any hit
+                   on it is logged. Capture-only — cannot serve dynamic
+                   responses (use cloudflared for that). Public OAST servers
+                   run by Project Discovery (oast.pro/site/live/...).
+
 == NOTES ==
 - The sandbox can execute foreign-arch Linux ELFs via qemu-*-static and
   Windows PEs via wine/wine64 — see the section above for invocation.

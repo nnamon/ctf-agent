@@ -1,0 +1,72 @@
+#!/bin/bash
+# expose-port: report reachable addresses + tunnel commands for a local port.
+#
+# Two scenarios this covers:
+#   1. CTF target is on our VPN/docker network -> use a direct interface IP.
+#   2. CTF target is on the public internet -> tunnel out via cloudflared/bore.
+# OOB-only callbacks (DNS/HTTP/SMTP exfil, blind XSS beacons) -> interactsh.
+#
+# Prints info; does NOT spawn tunnels. The agent runs the printed command.
+set -euo pipefail
+
+PORT="${1:-}"
+if [[ -z "$PORT" || ! "$PORT" =~ ^[0-9]+$ ]]; then
+    cat <<EOF
+usage: expose-port <port>
+
+Reports how to make a local TCP listener on <port> reachable from a CTF target.
+Prints VPN/docker-side direct addresses (if applicable), plus copy-paste
+internet tunnel commands.
+
+Tunnels available in this sandbox:
+  cloudflared        HTTP(S) tunnel    -> *.trycloudflare.com   (no auth)
+  bore               raw TCP tunnel    -> bore.pub:RANDOM_PORT  (no auth)
+  interactsh-client  OOB DNS/HTTP/SMTP -> *.oast.* domain       (no auth, capture-only)
+EOF
+    exit 1
+fi
+
+echo "=== expose-port :$PORT ==="
+echo
+
+addr_of() {
+    # nonzero exit from `ip` when iface absent must not abort the script
+    ip -4 addr show "$1" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -1 || true
+}
+
+found_vpn=0
+for iface in tun0 tun1 tap0 wg0; do
+    ip=$(addr_of "$iface")
+    if [[ -n "$ip" ]]; then
+        echo "VPN ($iface):   $ip:$PORT"
+        found_vpn=1
+    fi
+done
+
+eth_ip=$(addr_of eth0)
+if [[ -n "$eth_ip" ]]; then
+    echo "Docker (eth0): $eth_ip:$PORT  (only if target shares this docker network)"
+fi
+
+if [[ "$found_vpn" -eq 1 ]]; then
+    echo
+    echo "VPN is up — prefer the tun0 address above for callbacks from VPN-connected targets."
+fi
+
+cat <<EOF
+
+=== Internet tunnels (run in a separate shell, leave running) ===
+
+HTTP/HTTPS (cloudflared, ephemeral *.trycloudflare.com):
+  cloudflared tunnel --url http://localhost:$PORT --no-autoupdate
+  # public URL is logged on stderr — grep for 'trycloudflare.com'
+
+Raw TCP (bore.pub, ephemeral bore.pub:RANDOM):
+  bore local $PORT --to bore.pub
+  # remote_port is logged on stderr — use bore.pub:<port> as callback
+
+OOB capture only — DNS / HTTP / SMTP / LDAP (interactsh-client):
+  interactsh-client -v
+  # prints a *.oast.* domain; any DNS/HTTP/SMTP hit on it is logged.
+  # Note: capture only — cannot serve dynamic responses.
+EOF
