@@ -97,6 +97,57 @@ def _classify_traces(traces_dir: Path) -> dict[str, list[dict[str, Any]]]:
     return by_slug
 
 
+def _lookup_correct_attempt(sess: SessionContext, slug: str) -> dict[str, Any] | None:
+    """Return the most-recent successful flag submission for `slug` from the
+    session's attempts.db, or None if no `correct` row exists.
+
+    Why this matters: the swarm cancels every sibling solver the moment one
+    finds the flag, and that cancellation can race the cancelled solver's
+    final `finish` event — so the surviving trace may show
+    `status: cancelled, flag: null` even though the *swarm* solved the
+    challenge. Without this lookup, the rebuild flow infers "abandoned
+    solve" from the trace and the writeup says the flag was never captured.
+    AttemptLog is authoritative for outcome/flag; the trace is just one
+    solver's narrative.
+    """
+    db = sess.attempt_log_path
+    if not db.exists():
+        return None
+    try:
+        import sqlite3
+        with sqlite3.connect(str(db)) as conn:
+            # First try the obvious case: status='correct'.
+            row = conn.execute(
+                "SELECT flag, message, ts, status FROM attempts "
+                "WHERE challenge_name=? AND status='correct' "
+                "ORDER BY ts DESC LIMIT 1",
+                (slug,),
+            ).fetchone()
+            if row:
+                return {"flag": row[0], "message": row[1], "ts": row[2]}
+            # Fallback for the early htb-ctf-mcp submit_flag classification
+            # bug (commit 3b561ca): some correct flags landed with
+            # status='incorrect' but message='Correct flag!' — treat those
+            # as wins too. Any case-insensitive 'correct' that is NOT
+            # 'incorrect' counts.
+            row = conn.execute(
+                "SELECT flag, message, ts, status FROM attempts "
+                "WHERE challenge_name=? "
+                "AND lower(message) LIKE '%correct%' "
+                "AND lower(message) NOT LIKE '%incorrect%' "
+                "ORDER BY ts DESC LIMIT 1",
+                (slug,),
+            ).fetchone()
+            if row:
+                return {
+                    "flag": row[0], "message": row[1], "ts": row[2],
+                    "stored_status": row[3],  # for debugging logs
+                }
+    except Exception as e:
+        logger.warning("attempts.db lookup failed for %s: %s", slug, e)
+    return None
+
+
 def _read_finish(trace_path: Path) -> dict[str, Any] | None:
     """Return the last `finish` event from a trace, or None.
 
@@ -207,6 +258,18 @@ async def _rebuild_one(
     status = FLAG_FOUND if confirmed else "gave_up"
     step_count = winner.get("step_count", 0)
 
+    # Override from authoritative AttemptLog when a `correct` submission
+    # exists. The trace's `finish` event can lie because the swarm kills
+    # losing siblings the instant one wins, and that cancellation often
+    # lands before the cancelled solver writes its final finish event.
+    flag_source = "trace"
+    db_attempt = _lookup_correct_attempt(sess, slug)
+    if db_attempt and db_attempt.get("flag"):
+        flag = db_attempt["flag"]
+        confirmed = True
+        status = FLAG_FOUND
+        flag_source = "attempts.db"
+
     meta = _challenge_meta_for(slug, sess)
     if meta.name == slug and meta.category == "unknown":
         # Best-effort: if the slug looks like pwn.college (`<dojo>_<mod>_<slug>`),
@@ -225,7 +288,31 @@ async def _rebuild_one(
 
     sibling_traces = [(s["model"], s["path"]) for s in siblings]
 
-    label = f"  {slug:35} winner={winner['model']:20} flag={'YES' if flag else '—'} siblings={len(siblings)}"
+    # When the flag came from attempts.db (not the trace), the available
+    # trace likely belongs to a sibling that was cancelled the moment the
+    # actual winner submitted — so it ends mid-investigation. Tell the
+    # writeup model up front, otherwise it concludes "abandoned solve" and
+    # produces a dispiriting "flag not captured" post-mortem.
+    caveat = None
+    if flag_source == "attempts.db":
+        trace_finish_status = (winner.get("finish") or {}).get("status") or "unknown"
+        caveat = (
+            "The flag listed in `# Outcome` is sourced from the session's "
+            "AttemptLog (`attempts.db`), which is authoritative for outcome. "
+            f"The trace below shows `status={trace_finish_status}` and lacks "
+            "a `submit_flag` event because this trace belongs to a solver "
+            "that was cancelled the instant a sibling solver in the same "
+            "swarm submitted the correct flag — the winning solver's own "
+            "trace was not preserved.\n\n"
+            "Write the writeup with the flag treated as captured. Use the "
+            "trace to narrate the analytical path that led toward the "
+            "solution; if the trace ends before the final exfiltration "
+            "step, briefly note that the deciding move happened off-trace "
+            "and reconstruct the most plausible final step from the "
+            "available evidence. Do NOT frame this as an abandoned attempt."
+        )
+
+    label = f"  {slug:35} winner={winner['model']:20} flag={'YES' if flag else '—'} src={flag_source:11} siblings={len(siblings)}"
     if dry_run:
         click.echo(label + "  (dry-run, not regenerating)")
         return
@@ -240,6 +327,7 @@ async def _rebuild_one(
         out_dir=out_dir,
         model=model,
         settings=settings,
+        caveat=caveat,
     )
     if out:
         click.echo(f"      -> {out}")

@@ -316,6 +316,7 @@ def _build_user_prompt(
     status: str,
     cost_usd: float,
     duration_s: float,
+    caveat: str | None = None,
 ) -> str:
     parts: list[str] = []
     parts.append("# Challenge")
@@ -342,6 +343,12 @@ def _build_user_prompt(
         parts.append(f"Status: **not solved** ({status}) after {duration_s:.0f}s (cost ${cost_usd:.2f})")
         parts.append("Treat this as a post-mortem of where the chain broke down.")
     parts.append("")
+
+    if caveat:
+        parts.append("# Provenance caveat")
+        parts.append("")
+        parts.append(caveat)
+        parts.append("")
 
     # Notes section — first-person findings from each solver, the highest-signal
     # source. List even when empty so the writer knows it was checked.
@@ -416,6 +423,7 @@ async def generate_writeup(
     out_dir: Path = Path("writeups"),
     model: str = "claude-opus-4-7",
     settings: Any | None = None,
+    caveat: str | None = None,
 ) -> Path | None:
     """Generate a markdown writeup. Returns the file path on success, None on failure.
 
@@ -448,6 +456,7 @@ async def generate_writeup(
             status=winner_result.status,
             cost_usd=cost_usd,
             duration_s=duration_s,
+            caveat=caveat,
         )
 
         # Generate via the requested model; on transient failures
