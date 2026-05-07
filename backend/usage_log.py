@@ -56,6 +56,35 @@ CREATE INDEX IF NOT EXISTS idx_usage_run     ON usage(run_id);
 CREATE INDEX IF NOT EXISTS idx_usage_session ON usage(session_name, ts);
 CREATE INDEX IF NOT EXISTS idx_usage_model   ON usage(model_name, ts);
 CREATE INDEX IF NOT EXISTS idx_usage_chall   ON usage(challenge_name, ts);
+
+-- One row per swarm completion (any outcome — solved, gave-up, killed,
+-- error). Aggregates the per-agent rows in `usage` into a swarm-level
+-- summary for post-competition review: time-to-solve, cost, winner,
+-- token totals. Distinct from `usage` which is per-(agent, run) and
+-- doesn't carry status/winner/duration cleanly.
+CREATE TABLE IF NOT EXISTS challenge_solves (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id            TEXT NOT NULL,
+    session_name      TEXT NOT NULL,
+    challenge_name    TEXT NOT NULL,
+    category          TEXT,
+    points            INTEGER,
+    status            TEXT NOT NULL,           -- "flag_found" / "gave_up" / "error" / "cancelled"
+    flag              TEXT,                    -- captured flag if solved, else NULL
+    confirmed         INTEGER NOT NULL DEFAULT 0,  -- 0/1: did the backend accept?
+    winner_spec       TEXT,                    -- model_spec of the winning solver
+    winner_steps      INTEGER,                 -- steps the winner took
+    duration_seconds  REAL    NOT NULL DEFAULT 0,
+    cost_usd          REAL    NOT NULL DEFAULT 0,
+    input_tokens      INTEGER NOT NULL DEFAULT 0,
+    output_tokens     INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    started_at        INTEGER NOT NULL,        -- unix epoch
+    finished_at       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_solves_run     ON challenge_solves(run_id);
+CREATE INDEX IF NOT EXISTS idx_solves_session ON challenge_solves(session_name, finished_at);
+CREATE INDEX IF NOT EXISTS idx_solves_chall   ON challenge_solves(challenge_name, finished_at);
 """
 
 
@@ -73,6 +102,27 @@ class UsageRow:
     ts: int = 0
     challenge_name: str | None = None
     provider_spec: str | None = None
+
+
+@dataclass
+class ChallengeSolveRow:
+    run_id: str
+    session_name: str
+    challenge_name: str
+    status: str                     # "flag_found" | "gave_up" | "error" | "cancelled"
+    started_at: int
+    finished_at: int
+    duration_seconds: float
+    cost_usd: float
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    flag: str | None = None
+    confirmed: bool = False
+    winner_spec: str | None = None
+    winner_steps: int | None = None
+    category: str | None = None
+    points: int | None = None
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -112,6 +162,44 @@ def insert_row(db_path: Path, row: UsageRow) -> None:
             )
     except Exception as e:
         logger.warning("usage_log insert failed: %s", e)
+
+
+def insert_solve(db_path: Path, row: ChallengeSolveRow) -> None:
+    """Insert one swarm-completion summary into challenge_solves.
+    Failures are swallowed + logged — accounting must not break a
+    successful solve."""
+    try:
+        with _connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO challenge_solves("
+                " run_id, session_name, challenge_name, category, points, "
+                " status, flag, confirmed, winner_spec, winner_steps, "
+                " duration_seconds, cost_usd, "
+                " input_tokens, output_tokens, cache_read_tokens, "
+                " started_at, finished_at) "
+                "VALUES (?, ?, ?, ?, ?,  ?, ?, ?, ?, ?,  ?, ?,  ?, ?, ?,  ?, ?)",
+                (
+                    row.run_id,
+                    row.session_name,
+                    row.challenge_name,
+                    row.category,
+                    int(row.points) if row.points is not None else None,
+                    row.status,
+                    row.flag,
+                    1 if row.confirmed else 0,
+                    row.winner_spec,
+                    int(row.winner_steps) if row.winner_steps is not None else None,
+                    float(row.duration_seconds),
+                    float(row.cost_usd),
+                    int(row.input_tokens),
+                    int(row.output_tokens),
+                    int(row.cache_read_tokens),
+                    int(row.started_at),
+                    int(row.finished_at),
+                ),
+            )
+    except Exception as e:
+        logger.warning("challenge_solves insert failed: %s", e)
 
 
 def session_total_usd(db_path: Path, session_name: str) -> float:

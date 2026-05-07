@@ -270,8 +270,10 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
 
             async def _run_and_cleanup() -> None:
                 t0 = time.monotonic()
+                started_at_wall = int(time.time())
                 result = await swarm.run()
                 duration_s = time.monotonic() - t0
+                finished_at_wall = int(time.time())
                 # Flag already submitted/confirmed by solver's submit_fn — just record the result
                 if result and result.status == FLAG_FOUND:
                     deps.results[challenge_name] = {
@@ -288,6 +290,15 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
                         )
                     if not deps.no_writeup:
                         await _generate_writeup_for_swarm(swarm, result, deps, duration_s)
+
+                # Persist a per-challenge summary row for post-run review.
+                # Logged for ALL outcomes (solved, gave_up, error, cancelled)
+                # so we can compute solve-rate / time-to-solve / cost-per-
+                # category aggregations after the competition.
+                _persist_challenge_solve(
+                    deps=deps, swarm=swarm, result=result, duration_s=duration_s,
+                    started_at=started_at_wall, finished_at=finished_at_wall,
+                )
 
             task = asyncio.create_task(_run_and_cleanup(), name=f"swarm-{challenge_name}")
             deps.swarm_tasks[challenge_name] = task
@@ -456,6 +467,90 @@ async def do_broadcast(deps: CoordinatorDeps, challenge_name: str, message: str)
         return f"No swarm running for {challenge_name}"
     await swarm.message_bus.broadcast(message)
     return f"Broadcast to all solvers on {challenge_name}"
+
+
+def _persist_challenge_solve(
+    *,
+    deps: CoordinatorDeps,
+    swarm,
+    result,
+    duration_s: float,
+    started_at: int,
+    finished_at: int,
+) -> None:
+    """Insert a row into challenge_solves summarising this swarm run.
+
+    Aggregates per-solver token / cost data from swarm.cost_tracker for
+    every agent matching the swarm's `<challenge>/<spec>` naming. All
+    swarm outcomes (solved, gave_up, error, cancelled) get a row so
+    aggregations like solve-rate-by-category and cost-per-attempt
+    work post-competition. Failures are swallowed — accounting must
+    not break a successful solve.
+    """
+    try:
+        from backend.sandbox import RUN_ID
+        from backend.usage_log import ChallengeSolveRow, insert_solve
+
+        usage_db = getattr(deps.settings, "usage_log_path", None)
+        if not usage_db:
+            return  # operator disabled usage logging
+
+        challenge_name = swarm.meta.name
+        # Sum tokens + cost across every solver in this swarm. Agents are
+        # named "<challenge>/<spec>" so prefix-matching catches user/root
+        # halves on htb-machines and any future per-attempt naming.
+        prefix = f"{challenge_name}/"
+        in_t = out_t = cache_t = 0
+        cost = 0.0
+        for agent_name, usage in swarm.cost_tracker.by_agent.items():
+            if not agent_name.startswith(prefix):
+                continue
+            in_t += int(usage.usage.input_tokens or 0)
+            out_t += int(usage.usage.output_tokens or 0)
+            cache_t += int(usage.usage.cache_read_tokens or 0)
+            cost += float(usage.cost_usd or 0.0)
+
+        # Status normalisation. swarm.cancel_event is set on kill_swarm;
+        # we record those as "cancelled" so they don't pollute the
+        # solved-rate count. result is None when run() bailed early
+        # (start_instance failure, etc.).
+        if result is None:
+            status = "cancelled" if swarm.cancel_event.is_set() else "error"
+            flag = None
+            confirmed = False
+            winner_spec = None
+            winner_steps = None
+        else:
+            status = result.status
+            flag = result.flag
+            confirmed = bool(getattr(result, "confirmed", False)) or status == "flag_found"
+            winner_spec = swarm.winner_spec
+            winner_steps = result.step_count if status == "flag_found" else None
+
+        meta = swarm.meta
+        row = ChallengeSolveRow(
+            run_id=RUN_ID,
+            session_name=getattr(deps.settings, "session_name", "default") or "default",
+            challenge_name=challenge_name,
+            category=getattr(meta, "category", "") or None,
+            points=int(getattr(meta, "value", 0) or 0) or None,
+            status=status,
+            flag=flag,
+            confirmed=confirmed,
+            winner_spec=winner_spec,
+            winner_steps=winner_steps,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_seconds=float(duration_s),
+            cost_usd=cost,
+            input_tokens=in_t,
+            output_tokens=out_t,
+            cache_read_tokens=cache_t,
+        )
+        from pathlib import Path as _P
+        insert_solve(_P(usage_db), row)
+    except Exception as e:
+        logger.warning("challenge_solves persistence failed: %s", e)
 
 
 async def _generate_writeup_for_swarm(swarm, winner_result, deps: CoordinatorDeps, duration_s: float) -> None:
